@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timit — Work Time Tracker</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <h1>⏱ Timit</h1>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="timer">Timer</button>
+    <button class="tab-btn" data-tab="entries">Entries</button>
+    <button class="tab-btn" data-tab="calendar">Calendar</button>
+    <button class="tab-btn" data-tab="export">Export</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-timer" class="tab-panel active">
+    <div class="timer-card">
+      <div id="timer-display" class="timer-display">00:00:00</div>
+      <input id="timer-note" type="text" placeholder="What are you working on? (optional)">
+      <button id="timer-toggle" class="btn btn-primary btn-lg">Start</button>
+    </div>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Today</div>
+        <div id="stat-today" class="stat-value">0h 00m</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">This Week</div>
+        <div id="stat-week" class="stat-value">0h 00m</div>
+      </div>
+    </div>
+    <h2>Today's Entries</h2>
+    <div id="today-entries" class="entries-table"></div>
+  </section>
+
+  <section id="tab-entries" class="tab-panel">
+    <div class="filter-row">
+      <label>From <input type="date" id="entries-start"></label>
+      <label>To <input type="date" id="entries-end"></label>
+      <button id="entries-filter" class="btn">Filter</button>
+      <button id="entries-add" class="btn btn-primary">+ Add Entry</button>
+    </div>
+    <div id="entries-total" class="entries-total"></div>
+    <div id="entries-table" class="entries-table"></div>
+  </section>
+
+  <section id="tab-calendar" class="tab-panel">
+    <div class="calendar-nav">
+      <button id="cal-prev" class="btn">‹</button>
+      <span id="cal-label"></span>
+      <button id="cal-next" class="btn">›</button>
+    </div>
+    <div id="calendar-grid" class="calendar-grid"></div>
+    <h2 id="calendar-day-title" class="hidden">Entries</h2>
+    <div id="calendar-day-detail" class="entries-table"></div>
+  </section>
+
+  <section id="tab-export" class="tab-panel">
+    <div class="filter-row">
+      <label>From <input type="date" id="export-start"></label>
+      <label>To <input type="date" id="export-end"></label>
+    </div>
+    <p class="hint">Leave dates empty to include all recorded time.</p>
+    <div class="export-buttons">
+      <button id="export-xlsx" class="btn">📊 Excel Report (.xlsx)</button>
+      <button id="export-csv" class="btn">Raw Data (.csv)</button>
+      <button id="export-json" class="btn">Raw Data (.json)</button>
+    </div>
+    <hr>
+    <h2>Backup</h2>
+    <p class="hint">Download a full copy of the database file. Store it somewhere safe (e.g. a synced folder) for easy backups.</p>
+    <button id="export-backup" class="btn">💾 Download Full Backup</button>
+  </section>
+</main>
+
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <h3 id="modal-title">Edit Entry</h3>
+    <label>Start <input type="datetime-local" id="modal-start"></label>
+    <label>End <input type="datetime-local" id="modal-end"></label>
+    <label>Note <input type="text" id="modal-note" placeholder="optional"></label>
+    <p id="modal-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="modal-delete" class="btn btn-danger">Delete</button>
+      <div>
+        <button id="modal-cancel" class="btn">Cancel</button>
+        <button id="modal-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
