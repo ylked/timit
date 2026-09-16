@@ -1,0 +1,8 @@
+services:
+  timit:
+    build: .
+    ports:
+      - "5252:5252"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

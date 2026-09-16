@@ -21,6 +21,23 @@ python3 app.py
 
 Open http://localhost:5252 (set `PORT=xxxx` to use a different port).
 
+## Run with Docker
+
+```bash
+docker compose up -d --build
+```
+
+Open http://localhost:5252. `data/` is mounted into the container so `timit.db`
+lives on the host and survives rebuilds/`docker compose down`. To change the
+host port, edit the `ports` mapping in `docker-compose.yml`.
+
+Without compose:
+
+```bash
+docker build -t timit .
+docker run -d -p 5252:5252 -v "$(pwd)/data:/app/data" --name timit timit
+```
+
 ## Data & backups
 
 All data lives in `data/timit.db` (a single SQLite file). To back up, either:
