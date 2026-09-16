@@ -27,23 +27,33 @@ Open http://localhost:5252 (set `PORT=xxxx` to use a different port).
 docker compose up -d --build
 ```
 
-Open http://localhost:5252. `data/` is mounted into the container so `timit.db`
-lives on the host and survives rebuilds/`docker compose down`. To change the
-host port, edit the `ports` mapping in `docker-compose.yml`.
+Open http://localhost:5252. Data is stored in a named Docker volume
+(`timit-data`), not a bind-mounted host folder — SQLite needs real file
+locking, which host bind mounts on Docker Desktop (Mac/Windows) don't reliably
+provide and can cause `sqlite3.OperationalError: unable to open database file`.
+The named volume survives rebuilds/`docker compose down`; it's only removed if
+you run `docker compose down -v`.
 
 Without compose:
 
 ```bash
 docker build -t timit .
-docker run -d -p 5252:5252 -v "$(pwd)/data:/app/data" --name timit timit
+docker run -d -p 5252:5252 -v timit-data:/app/data --name timit timit
 ```
+
+If you're on native Linux (no Docker Desktop virtualization layer) and want
+the `.db` file directly accessible on the host instead, a bind mount works
+fine there — replace the volume line with `./data:/app/data`.
 
 ## Data & backups
 
-All data lives in `data/timit.db` (a single SQLite file). To back up, either:
+All data lives in a single SQLite file at `data/timit.db` (or inside the
+`timit-data` Docker volume, when run via Docker). To back up:
 
-- Click **Download Full Backup** on the Export tab, or
-- Just copy `data/timit.db` somewhere safe (e.g. a synced Dropbox/iCloud folder).
+- Click **Download Full Backup** on the Export tab (works the same whether
+  running locally or in Docker), or
+- Local run: copy `data/timit.db` somewhere safe (e.g. a synced Dropbox/iCloud folder).
+- Docker run: `docker cp timit:/app/data/timit.db ./timit-backup.db`.
 
 There's no server-side scheduling — the "backup" is just that one file.
 

@@ -4,5 +4,8 @@ services:
     ports:
       - "5252:5252"
     volumes:
-      - ./data:/app/data
+      - timit-data:/app/data
     restart: unless-stopped
+
+volumes:
+  timit-data:
