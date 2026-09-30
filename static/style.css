@@ -8,6 +8,8 @@
   --primary-hover: #2c47d6;
   --danger: #e0483e;
   --danger-hover: #c53c33;
+  --success: #1f9d55;
+  --warning: #b7791f;
   --radius: 10px;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
 }
@@ -23,6 +25,8 @@
     --primary-hover: #7089ff;
     --danger: #ef5a50;
     --danger-hover: #f0736a;
+    --success: #3cc47c;
+    --warning: #e0a53a;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.24);
   }
 }
@@ -312,6 +316,10 @@ hr {
 .cal-day-num { font-size: 12px; color: var(--text-muted); }
 .cal-day-hours { font-size: 13px; font-weight: 700; }
 
+.cal-day.submitted { background: color-mix(in srgb, var(--success) 12%, var(--surface)); }
+.cal-day.submitted .cal-day-num::after { content: " ✓"; color: var(--success); }
+.cal-day.selected.submitted { background: var(--primary); }
+
 .hidden { display: none !important; }
 
 .modal-overlay {
@@ -362,6 +370,48 @@ hr {
   align-items: center;
   margin-top: 8px;
 }
+
+.btn-sm { padding: 4px 10px; font-size: 13px; }
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin-bottom: 14px;
+  cursor: pointer;
+}
+.modal .checkbox-row { flex-direction: row; margin-bottom: 0; color: var(--text); }
+.modal .checkbox-row input { padding: 0; }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-head h2 { margin: 0; }
+.section-head + .hint { margin-top: 8px; }
+
+.unsubmitted-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+  font-size: 14px;
+}
+.unsubmitted-banner.ok {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+}
+
+.period-drift { color: var(--warning); font-size: 12px; font-weight: 600; white-space: nowrap; }
 
 .error { color: var(--danger); font-size: 13px; margin: 0; }
 

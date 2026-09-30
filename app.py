@@ -42,6 +42,18 @@ def init_db():
         )
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pay_periods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            seconds REAL NOT NULL DEFAULT 0,
+            note TEXT DEFAULT ''
+        )
+        """
+    )
     db.commit()
     db.close()
 
@@ -259,6 +271,128 @@ def calendar_view():
     db = get_db()
     totals = daily_totals(db, start_date, end_date)
     return jsonify({d.isoformat(): secs for d, secs in totals.items()})
+
+
+# ---------- pay periods (ranges submitted to HR) ----------
+
+def range_seconds(db, start_date, end_date):
+    return sum(daily_totals(db, start_date, end_date).values())
+
+
+def overlapping_period(db, start_date, end_date, exclude_id=None):
+    return db.execute(
+        "SELECT * FROM pay_periods WHERE start_date <= ? AND end_date >= ? AND id IS NOT ? ORDER BY start_date LIMIT 1",
+        (end_date.isoformat(), start_date.isoformat(), exclude_id),
+    ).fetchone()
+
+
+def validate_period(db, data, exclude_id=None):
+    """Returns (start_date, end_date, error_response)."""
+    try:
+        start_date = date.fromisoformat(data["start_date"])
+        end_date = date.fromisoformat(data["end_date"])
+    except (KeyError, TypeError, ValueError):
+        return None, None, (jsonify({"error": "Start and end dates are required"}), 400)
+    if end_date < start_date:
+        return None, None, (jsonify({"error": "End date must not be before start date"}), 400)
+    clash = overlapping_period(db, start_date, end_date, exclude_id)
+    if clash is not None:
+        msg = f"Overlaps the period {clash['start_date']} – {clash['end_date']} that is already marked as submitted"
+        return None, None, (jsonify({"error": msg}), 409)
+    return start_date, end_date, None
+
+
+def period_dict(db, row):
+    d = dict(row)
+    d["current_seconds"] = range_seconds(db, date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"]))
+    return d
+
+
+@app.get("/api/periods")
+def list_periods():
+    db = get_db()
+    rows = db.execute("SELECT * FROM pay_periods ORDER BY start_date DESC").fetchall()
+    periods = [period_dict(db, r) for r in rows]
+    today = date.today()
+
+    # Hours on days not covered by any period.
+    unsubmitted = {"seconds": 0, "start": None, "end": None}
+    bounds = db.execute("SELECT MIN(start_ts) AS mn, MAX(COALESCE(end_ts, start_ts)) AS mx FROM entries").fetchone()
+    if bounds["mn"] is not None:
+        first = parse_iso(bounds["mn"]).date()
+        last = max(parse_iso(bounds["mx"]).date(), today)
+        covered = [(date.fromisoformat(r["start_date"]), date.fromisoformat(r["end_date"])) for r in rows]
+        for d, secs in daily_totals(db, first, last).items():
+            if secs > 0 and not any(s <= d <= e for s, e in covered):
+                unsubmitted["seconds"] += secs
+                unsubmitted["start"] = min(unsubmitted["start"] or d, d)
+                unsubmitted["end"] = max(unsubmitted["end"] or d, d)
+        for key in ("start", "end"):
+            if unsubmitted[key]:
+                unsubmitted[key] = unsubmitted[key].isoformat()
+
+    # Suggested next range: the day after the latest period up to the end of that month.
+    suggested = None
+    if rows:
+        start = max(date.fromisoformat(r["end_date"]) for r in rows) + timedelta(days=1)
+    elif bounds["mn"] is not None:
+        start = parse_iso(bounds["mn"]).date()
+    else:
+        start = None
+    if start is not None and start <= today:
+        month_end = date(start.year, start.month, monthrange(start.year, start.month)[1])
+        suggested = {"start": start.isoformat(), "end": min(month_end, today).isoformat()}
+
+    return jsonify({"periods": periods, "unsubmitted": unsubmitted, "suggested": suggested})
+
+
+@app.post("/api/periods")
+def create_period():
+    data = request.get_json() or {}
+    db = get_db()
+    start_date, end_date, err = validate_period(db, data)
+    if err:
+        return err
+    exported_at = normalize_iso(data["exported_at"]) if data.get("exported_at") else now_iso()
+    cur = db.execute(
+        "INSERT INTO pay_periods (start_date, end_date, exported_at, seconds, note) VALUES (?, ?, ?, ?, ?)",
+        (start_date.isoformat(), end_date.isoformat(), exported_at, range_seconds(db, start_date, end_date), data.get("note", "")),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM pay_periods WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(period_dict(db, row))
+
+
+@app.put("/api/periods/<int:period_id>")
+def update_period(period_id):
+    data = request.get_json() or {}
+    db = get_db()
+    row = db.execute("SELECT * FROM pay_periods WHERE id = ?", (period_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": "Not found"}), 404
+    merged = {"start_date": data.get("start_date") or row["start_date"], "end_date": data.get("end_date") or row["end_date"]}
+    start_date, end_date, err = validate_period(db, merged, exclude_id=period_id)
+    if err:
+        return err
+    exported_at = normalize_iso(data["exported_at"]) if data.get("exported_at") else row["exported_at"]
+    note = data.get("note", row["note"])
+    range_changed = (start_date.isoformat(), end_date.isoformat()) != (row["start_date"], row["end_date"])
+    seconds = range_seconds(db, start_date, end_date) if range_changed or data.get("resync") else row["seconds"]
+    db.execute(
+        "UPDATE pay_periods SET start_date=?, end_date=?, exported_at=?, seconds=?, note=? WHERE id=?",
+        (start_date.isoformat(), end_date.isoformat(), exported_at, seconds, note, period_id),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM pay_periods WHERE id = ?", (period_id,)).fetchone()
+    return jsonify(period_dict(db, row))
+
+
+@app.delete("/api/periods/<int:period_id>")
+def delete_period(period_id):
+    db = get_db()
+    db.execute("DELETE FROM pay_periods WHERE id = ?", (period_id,))
+    db.commit()
+    return jsonify({"ok": True})
 
 
 # ---------- exports ----------

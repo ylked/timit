@@ -61,16 +61,29 @@
   </section>
 
   <section id="tab-export" class="tab-panel">
+    <div id="unsubmitted-banner" class="unsubmitted-banner hidden"></div>
     <div class="filter-row">
       <label>From <input type="date" id="export-start"></label>
       <label>To <input type="date" id="export-end"></label>
     </div>
     <p class="hint">Leave dates empty to include all recorded time.</p>
+    <label class="checkbox-row">
+      <input type="checkbox" id="export-mark" checked>
+      Mark this range as submitted to HR
+    </label>
+    <p id="export-error" class="error hidden"></p>
     <div class="export-buttons">
       <button id="export-xlsx" class="btn">📊 Excel Report (.xlsx)</button>
       <button id="export-csv" class="btn">Raw Data (.csv)</button>
       <button id="export-json" class="btn">Raw Data (.json)</button>
     </div>
+    <hr>
+    <div class="section-head">
+      <h2>Submitted to HR</h2>
+      <button id="period-add" class="btn">+ Add Period</button>
+    </div>
+    <p class="hint">Date ranges already handed to HR. Click one to edit or delete it.</p>
+    <div id="periods-table" class="entries-table"></div>
     <hr>
     <h2>Backup</h2>
     <p class="hint">Download a full copy of the database file. Store it somewhere safe (e.g. a synced folder) for easy backups.</p>
@@ -90,6 +103,28 @@
       <div>
         <button id="modal-cancel" class="btn">Cancel</button>
         <button id="modal-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="period-modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <h3 id="period-modal-title">Edit Period</h3>
+    <label>From <input type="date" id="period-start"></label>
+    <label>To <input type="date" id="period-end"></label>
+    <label>Submitted on <input type="datetime-local" id="period-exported"></label>
+    <label>Note <input type="text" id="period-note" placeholder="optional"></label>
+    <label id="period-resync-row" class="checkbox-row hidden">
+      <input type="checkbox" id="period-resync">
+      <span id="period-resync-label"></span>
+    </label>
+    <p id="period-modal-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="period-delete" class="btn btn-danger">Delete</button>
+      <div>
+        <button id="period-cancel" class="btn">Cancel</button>
+        <button id="period-save" class="btn btn-primary">Save</button>
       </div>
     </div>
   </div>

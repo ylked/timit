@@ -64,3 +64,17 @@ From the Export tab, for any date range (or all time if left blank):
 - **Excel report** (`.xlsx`) — a "Daily Summary" sheet (one row per day) plus a
   "Raw Entries" sheet with every individual entry in range.
 - **Raw CSV / JSON** — every entry as `id, start, end, duration, note`.
+
+## Submitting to HR (pay periods)
+
+The Export tab keeps track of which date ranges you've already handed to HR:
+
+- With **"Mark this range as submitted to HR"** ticked, exporting also saves the
+  range as a submitted period. Untick it to export without marking anything.
+- The banner shows how many hours aren't in any submitted period yet, and offers
+  the next range (the day after your last period up to the end of that month).
+- Under **Submitted to HR** you can add, edit, or delete periods, or download
+  a period's Excel report again. Periods can't overlap.
+- If entries inside a submitted period change afterwards, the period shows
+  `⚠ now …` with the new total. You can accept the new total in its edit dialog.
+- Days in a submitted period have a ✓ in the calendar.

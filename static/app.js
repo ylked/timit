@@ -60,6 +60,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
     if (btn.dataset.tab === "entries") loadEntriesTab();
     if (btn.dataset.tab === "calendar") loadCalendar();
+    if (btn.dataset.tab === "export") loadExportTab();
   });
 });
 
@@ -298,6 +299,7 @@ async function refreshAll() {
   await refreshDashboard();
   if (document.getElementById("tab-entries").classList.contains("active")) await filterEntries();
   if (document.getElementById("tab-calendar").classList.contains("active")) await loadCalendar();
+  if (document.getElementById("tab-export").classList.contains("active")) await loadPeriods();
 }
 
 // ---------- calendar tab ----------
@@ -317,7 +319,12 @@ async function loadCalendar() {
   const label = new Date(calYear, calMonth - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
   document.getElementById("cal-label").textContent = label;
 
-  const totals = await api(`/api/calendar?year=${calYear}&month=${calMonth}`);
+  const [totals, periodData] = await Promise.all([
+    api(`/api/calendar?year=${calYear}&month=${calMonth}`),
+    api("/api/periods"),
+  ]);
+  const isSubmitted = (dateStr) =>
+    periodData.periods.some((p) => p.start_date <= dateStr && dateStr <= p.end_date);
   const grid = document.getElementById("calendar-grid");
   grid.innerHTML = "";
 
@@ -346,6 +353,10 @@ async function loadCalendar() {
     el.className = "cal-day";
     if (dateStr === todayStr) el.classList.add("today");
     if (dateStr === selectedDay) el.classList.add("selected");
+    if (isSubmitted(dateStr)) {
+      el.classList.add("submitted");
+      el.title = "Submitted to HR";
+    }
     el.innerHTML = `<span class="cal-day-num">${day}</span><span class="cal-day-hours">${secs > 0 ? fmtDuration(secs) : ""}</span>`;
     el.addEventListener("click", () => selectCalendarDay(dateStr));
     grid.appendChild(el);
@@ -376,26 +387,210 @@ document.getElementById("cal-next").addEventListener("click", () => {
 
 // ---------- export tab ----------
 
-function buildQuery() {
-  const start = document.getElementById("export-start").value;
-  const end = document.getElementById("export-end").value;
+const exportStart = document.getElementById("export-start");
+const exportEnd = document.getElementById("export-end");
+const exportMark = document.getElementById("export-mark");
+const exportError = document.getElementById("export-error");
+
+let periodState = { periods: [], unsubmitted: null, suggested: null };
+
+function buildQuery(start = exportStart.value, end = exportEnd.value) {
   const params = new URLSearchParams();
   if (start) params.set("start", start);
   if (end) params.set("end", end);
   return params.toString();
 }
 
-document.getElementById("export-xlsx").addEventListener("click", () => {
-  window.open(`/api/export/xlsx?${buildQuery()}`, "_blank");
-});
-document.getElementById("export-csv").addEventListener("click", () => {
-  window.open(`/api/export/csv?${buildQuery()}`, "_blank");
-});
-document.getElementById("export-json").addEventListener("click", () => {
-  window.open(`/api/export/json?${buildQuery()}`, "_blank");
-});
+function download(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function showExportError(msg) {
+  exportError.textContent = msg;
+  exportError.classList.toggle("hidden", !msg);
+}
+
+function applySuggestedRange() {
+  if (!periodState.suggested) return;
+  exportStart.value = periodState.suggested.start;
+  exportEnd.value = periodState.suggested.end;
+  exportMark.checked = true;
+}
+
+async function loadExportTab() {
+  await loadPeriods();
+  if (!exportStart.value && !exportEnd.value) applySuggestedRange();
+}
+
+async function loadPeriods() {
+  periodState = await api("/api/periods");
+  renderUnsubmittedBanner();
+  renderPeriods();
+}
+
+function renderUnsubmittedBanner() {
+  const banner = document.getElementById("unsubmitted-banner");
+  const { unsubmitted, suggested } = periodState;
+  banner.classList.remove("hidden");
+  if (!unsubmitted || unsubmitted.seconds <= 0) {
+    banner.className = "unsubmitted-banner ok";
+    banner.textContent = "✓ All recorded time has been submitted to HR.";
+    return;
+  }
+  banner.className = "unsubmitted-banner";
+  banner.innerHTML = `
+    <span><strong>${fmtDuration(unsubmitted.seconds)}</strong> not yet submitted to HR
+    (between ${unsubmitted.start} and ${unsubmitted.end}).</span>
+    ${suggested ? `<button class="btn" id="use-suggested">Select ${suggested.start} – ${suggested.end}</button>` : ""}
+  `;
+  const btn = document.getElementById("use-suggested");
+  if (btn) btn.addEventListener("click", applySuggestedRange);
+}
+
+function renderPeriods() {
+  const container = document.getElementById("periods-table");
+  container.innerHTML = "";
+  if (periodState.periods.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nothing submitted yet.</div>';
+    return;
+  }
+  periodState.periods.forEach((period) => {
+    const row = document.createElement("div");
+    row.className = "entry-row";
+    const drift = Math.abs(period.current_seconds - period.seconds) >= 60;
+    row.innerHTML = `
+      <span class="entry-time">${period.start_date} – ${period.end_date}</span>
+      <span class="entry-note">${period.note ? escapeHtml(period.note) : ""}</span>
+      <span class="entry-date">submitted ${fmtDateShort(period.exported_at)}</span>
+      ${drift ? `<span class="period-drift" title="Entries in this range changed after it was submitted">⚠ now ${fmtDuration(period.current_seconds)}</span>` : ""}
+      <span class="entry-duration">${fmtDuration(period.seconds)}</span>
+      <button class="btn btn-sm" title="Download Excel report for this period">⬇</button>
+    `;
+    row.querySelector("button").addEventListener("click", (e) => {
+      e.stopPropagation();
+      download(`/api/export/xlsx?${buildQuery(period.start_date, period.end_date)}`);
+    });
+    row.addEventListener("click", () => openPeriodModal(period));
+    container.appendChild(row);
+  });
+}
+
+async function doExport(kind) {
+  showExportError("");
+  const start = exportStart.value;
+  const end = exportEnd.value;
+  if (exportMark.checked) {
+    if (!start || !end) {
+      showExportError("Pick both a start and an end date to mark the range as submitted, or untick the checkbox.");
+      return;
+    }
+    const alreadyMarked = periodState.periods.some((p) => p.start_date === start && p.end_date === end);
+    if (!alreadyMarked) {
+      try {
+        await api("/api/periods", { method: "POST", body: JSON.stringify({ start_date: start, end_date: end }) });
+      } catch (e) {
+        showExportError(`${e.message}. Adjust the dates or untick the checkbox to export without marking.`);
+        return;
+      }
+    }
+  }
+  download(`/api/export/${kind}?${buildQuery()}`);
+  if (exportMark.checked) await loadPeriods();
+}
+
+document.getElementById("export-xlsx").addEventListener("click", () => doExport("xlsx"));
+document.getElementById("export-csv").addEventListener("click", () => doExport("csv"));
+document.getElementById("export-json").addEventListener("click", () => doExport("json"));
 document.getElementById("export-backup").addEventListener("click", () => {
   window.open("/api/backup", "_blank");
+});
+
+// ---------- pay period modal ----------
+
+const periodOverlay = document.getElementById("period-modal-overlay");
+const periodStartInput = document.getElementById("period-start");
+const periodEndInput = document.getElementById("period-end");
+const periodExportedInput = document.getElementById("period-exported");
+const periodNoteInput = document.getElementById("period-note");
+const periodResyncRow = document.getElementById("period-resync-row");
+const periodResync = document.getElementById("period-resync");
+const periodError = document.getElementById("period-modal-error");
+const periodDelete = document.getElementById("period-delete");
+
+let editingPeriodId = null;
+
+function openPeriodModal(period) {
+  periodError.classList.add("hidden");
+  periodResync.checked = false;
+  if (period) {
+    editingPeriodId = period.id;
+    document.getElementById("period-modal-title").textContent = "Edit Submitted Period";
+    periodStartInput.value = period.start_date;
+    periodEndInput.value = period.end_date;
+    periodExportedInput.value = toLocalInputValue(period.exported_at);
+    periodNoteInput.value = period.note || "";
+    const drift = Math.abs(period.current_seconds - period.seconds) >= 60;
+    periodResyncRow.classList.toggle("hidden", !drift);
+    document.getElementById("period-resync-label").textContent =
+      `Update recorded hours from ${fmtDuration(period.seconds)} to current ${fmtDuration(period.current_seconds)}`;
+    periodDelete.classList.remove("hidden");
+  } else {
+    editingPeriodId = null;
+    document.getElementById("period-modal-title").textContent = "Add Submitted Period";
+    periodStartInput.value = periodState.suggested ? periodState.suggested.start : "";
+    periodEndInput.value = periodState.suggested ? periodState.suggested.end : "";
+    periodExportedInput.value = "";
+    periodNoteInput.value = "";
+    periodResyncRow.classList.add("hidden");
+    periodDelete.classList.add("hidden");
+  }
+  periodOverlay.classList.remove("hidden");
+}
+
+function closePeriodModal() {
+  periodOverlay.classList.add("hidden");
+}
+
+document.getElementById("period-add").addEventListener("click", () => openPeriodModal(null));
+document.getElementById("period-cancel").addEventListener("click", closePeriodModal);
+periodOverlay.addEventListener("click", (e) => {
+  if (e.target === periodOverlay) closePeriodModal();
+});
+
+document.getElementById("period-save").addEventListener("click", async () => {
+  periodError.classList.add("hidden");
+  const payload = {
+    start_date: periodStartInput.value,
+    end_date: periodEndInput.value,
+    exported_at: periodExportedInput.value || null,
+    note: periodNoteInput.value,
+    resync: periodResync.checked,
+  };
+  try {
+    if (editingPeriodId) {
+      await api(`/api/periods/${editingPeriodId}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/periods", { method: "POST", body: JSON.stringify(payload) });
+    }
+    closePeriodModal();
+    await loadPeriods();
+  } catch (e) {
+    periodError.textContent = e.message;
+    periodError.classList.remove("hidden");
+  }
+});
+
+periodDelete.addEventListener("click", async () => {
+  if (!editingPeriodId) return;
+  if (!confirm("Delete this period? Its hours will count as not submitted again.")) return;
+  await api(`/api/periods/${editingPeriodId}`, { method: "DELETE" });
+  closePeriodModal();
+  await loadPeriods();
 });
 
 // ---------- init ----------
