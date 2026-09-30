@@ -6,6 +6,8 @@ services:
     volumes:
       - timit-data:/app/data
     restart: unless-stopped
+    environment:
+      - TZ=Europe/Zurich
 
 volumes:
   timit-data:
