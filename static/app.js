@@ -306,7 +306,11 @@ async function refreshAll() {
 
 let calYear, calMonth; // calMonth is 1-12
 let selectedDay = null;
-const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Week"];
+
+function localIsoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function initCalendarState() {
   const now = new Date();
@@ -319,10 +323,20 @@ async function loadCalendar() {
   const label = new Date(calYear, calMonth - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
   document.getElementById("cal-label").textContent = label;
 
-  const [totals, periodData] = await Promise.all([
+  const firstDay = new Date(calYear, calMonth - 1, 1);
+  const leadingBlanks = (firstDay.getDay() + 6) % 7; // Monday-first
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+  const trailingBlanks = (7 - ((leadingBlanks + daysInMonth) % 7)) % 7;
+  // Weekly totals cover full weeks, including days that fall in adjacent months.
+  const gridStart = new Date(calYear, calMonth - 1, 1 - leadingBlanks);
+  const gridEnd = new Date(calYear, calMonth - 1, daysInMonth + trailingBlanks);
+
+  const [totals, periodData, weekSummary] = await Promise.all([
     api(`/api/calendar?year=${calYear}&month=${calMonth}`),
     api("/api/periods"),
+    api(`/api/summary/week?start=${localIsoDate(gridStart)}&end=${localIsoDate(gridEnd)}`),
   ]);
+  const weekTotals = Object.fromEntries(weekSummary.map((w) => [w.week_start, w.seconds]));
   const isSubmitted = (dateStr) =>
     periodData.periods.some((p) => p.start_date <= dateStr && dateStr <= p.end_date);
   const grid = document.getElementById("calendar-grid");
@@ -330,14 +344,11 @@ async function loadCalendar() {
 
   DOW_LABELS.forEach((d) => {
     const el = document.createElement("div");
-    el.className = "cal-dow";
+    el.className = d === "Week" ? "cal-dow cal-week-dow" : "cal-dow";
     el.textContent = d;
     grid.appendChild(el);
   });
 
-  const firstDay = new Date(calYear, calMonth - 1, 1);
-  const leadingBlanks = (firstDay.getDay() + 6) % 7; // Monday-first
-  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
   const todayStr = isoDate(new Date());
 
   for (let i = 0; i < leadingBlanks; i++) {
@@ -359,6 +370,25 @@ async function loadCalendar() {
     }
     el.innerHTML = `<span class="cal-day-num">${day}</span><span class="cal-day-hours">${secs > 0 ? fmtDuration(secs) : ""}</span>`;
     el.addEventListener("click", () => selectCalendarDay(dateStr));
+    grid.appendChild(el);
+    if ((leadingBlanks + day) % 7 === 0) appendWeekTotal(grid, weekTotals, leadingBlanks + day);
+  }
+
+  for (let i = 0; i < trailingBlanks; i++) {
+    const el = document.createElement("div");
+    el.className = "cal-day empty";
+    grid.appendChild(el);
+  }
+  if (trailingBlanks > 0) appendWeekTotal(grid, weekTotals, leadingBlanks + daysInMonth + trailingBlanks);
+
+  function appendWeekTotal(grid, weekTotals, cellCount) {
+    const weekStart = new Date(gridStart);
+    weekStart.setDate(gridStart.getDate() + cellCount - 7);
+    const secs = weekTotals[localIsoDate(weekStart)] || 0;
+    const el = document.createElement("div");
+    el.className = "cal-week-total";
+    el.title = `Week of ${localIsoDate(weekStart)}`;
+    el.textContent = secs > 0 ? fmtDuration(secs) : "—";
     grid.appendChild(el);
   }
 }
