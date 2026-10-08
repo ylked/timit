@@ -54,6 +54,23 @@ def init_db():
         )
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS week_quotas (
+            week_start TEXT PRIMARY KEY,
+            hours REAL NOT NULL,
+            note TEXT DEFAULT ''
+        )
+        """
+    )
     db.commit()
     db.close()
 
@@ -271,6 +288,181 @@ def calendar_view():
     db = get_db()
     totals = daily_totals(db, start_date, end_date)
     return jsonify({d.isoformat(): secs for d, secs in totals.items()})
+
+
+# ---------- weekly quota ----------
+
+DEFAULT_WEEKLY_QUOTA_HOURS = 15.0
+
+
+def week_start_of(d):
+    return d - timedelta(days=d.weekday())
+
+
+def get_setting(db, key, default=None):
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(db, key, value):
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, str(value)),
+    )
+
+
+def quota_settings(db):
+    start_s = get_setting(db, "quota_start_date")
+    if start_s:
+        start = date.fromisoformat(start_s)
+    else:
+        # Default to the week of the first recorded entry (or this week if there are none).
+        row = db.execute("SELECT MIN(start_ts) AS mn FROM entries").fetchone()
+        start = week_start_of(parse_iso(row["mn"]).date() if row["mn"] else date.today())
+    return {
+        "weekly_hours": float(get_setting(db, "weekly_quota_hours", DEFAULT_WEEKLY_QUOTA_HOURS)),
+        "start_date": start.isoformat(),
+        "start_date_is_default": start_s is None,
+    }
+
+
+def quota_weeks(db, first_week, last_week):
+    """Per-week worked seconds and quota for the weeks starting first_week..last_week (Mondays)."""
+    settings = quota_settings(db)
+    quota_start = week_start_of(date.fromisoformat(settings["start_date"]))
+    overrides = {
+        r["week_start"]: r
+        for r in db.execute(
+            "SELECT * FROM week_quotas WHERE week_start BETWEEN ? AND ?",
+            (first_week.isoformat(), last_week.isoformat()),
+        ).fetchall()
+    }
+    totals = daily_totals(db, first_week, last_week + timedelta(days=6))
+    current_week = week_start_of(date.today())
+    weeks = []
+    ws = first_week
+    while ws <= last_week:
+        override = overrides.get(ws.isoformat())
+        if override is not None:
+            quota_hours = override["hours"]
+        elif ws >= quota_start:
+            quota_hours = settings["weekly_hours"]
+        else:
+            quota_hours = None  # before tracking started: no quota
+        weeks.append({
+            "week_start": ws.isoformat(),
+            "seconds": sum(totals.get(ws + timedelta(days=i), 0) for i in range(7)),
+            "quota_hours": quota_hours,
+            "is_override": override is not None,
+            "note": override["note"] if override is not None else "",
+            "state": "past" if ws < current_week else "current" if ws == current_week else "future",
+        })
+        ws += timedelta(days=7)
+    return weeks
+
+
+@app.get("/api/quota/settings")
+def get_quota_settings():
+    return jsonify(quota_settings(get_db()))
+
+
+@app.put("/api/quota/settings")
+def update_quota_settings():
+    data = request.get_json() or {}
+    db = get_db()
+    if "weekly_hours" in data:
+        try:
+            hours = float(data["weekly_hours"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "Weekly hours must be a number"}), 400
+        if hours < 0:
+            return jsonify({"error": "Weekly hours must not be negative"}), 400
+        set_setting(db, "weekly_quota_hours", hours)
+    if "start_date" in data:
+        if data["start_date"]:
+            try:
+                date.fromisoformat(data["start_date"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid start date"}), 400
+            set_setting(db, "quota_start_date", data["start_date"])
+        else:
+            db.execute("DELETE FROM settings WHERE key = 'quota_start_date'")
+    db.commit()
+    return jsonify(quota_settings(db))
+
+
+@app.get("/api/quota/weeks")
+def list_quota_weeks():
+    db = get_db()
+    try:
+        start_date = date.fromisoformat(request.args["start"])
+        end_date = date.fromisoformat(request.args["end"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "start and end are required"}), 400
+    return jsonify(quota_weeks(db, week_start_of(start_date), week_start_of(end_date)))
+
+
+@app.put("/api/quota/weeks/<week>")
+def set_week_quota(week):
+    data = request.get_json() or {}
+    try:
+        ws = week_start_of(date.fromisoformat(week))
+        hours = float(data["hours"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "Hours must be a number"}), 400
+    if hours < 0:
+        return jsonify({"error": "Hours must not be negative"}), 400
+    db = get_db()
+    db.execute(
+        "INSERT INTO week_quotas (week_start, hours, note) VALUES (?, ?, ?) "
+        "ON CONFLICT(week_start) DO UPDATE SET hours = excluded.hours, note = excluded.note",
+        (ws.isoformat(), hours, data.get("note", "")),
+    )
+    db.commit()
+    return jsonify(quota_weeks(db, ws, ws)[0])
+
+
+@app.delete("/api/quota/weeks/<week>")
+def reset_week_quota(week):
+    try:
+        ws = week_start_of(date.fromisoformat(week))
+    except ValueError:
+        return jsonify({"error": "Invalid week"}), 400
+    db = get_db()
+    db.execute("DELETE FROM week_quotas WHERE week_start = ?", (ws.isoformat(),))
+    db.commit()
+    return jsonify(quota_weeks(db, ws, ws)[0])
+
+
+@app.get("/api/quota/balance")
+def quota_balance():
+    """Over/under time from the quota start date up to today.
+
+    Completed weeks count in full. The current week is reported separately, since its
+    quota can't be missed until the week is over.
+    """
+    db = get_db()
+    settings = quota_settings(db)
+    current_week = week_start_of(date.today())
+    first_week = week_start_of(date.fromisoformat(settings["start_date"]))
+    balance = 0
+    worked = 0
+    quota = 0
+    if first_week < current_week:
+        for w in quota_weeks(db, first_week, current_week - timedelta(days=7)):
+            if w["quota_hours"] is None:
+                continue
+            worked += w["seconds"]
+            quota += w["quota_hours"] * 3600
+        balance = worked - quota
+    this_week = quota_weeks(db, current_week, current_week)[0]
+    return jsonify({
+        "settings": settings,
+        "balance_seconds": balance,
+        "worked_seconds": worked,
+        "quota_seconds": quota,
+        "current_week": this_week,
+    })
 
 
 # ---------- pay periods (ranges submitted to HR) ----------

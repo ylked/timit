@@ -17,6 +17,25 @@ function fmtDuration(seconds) {
   return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
+function fmtSigned(seconds) {
+  if (Math.abs(seconds) < 60) return "±0h 00m";
+  return `${seconds > 0 ? "+" : "−"}${fmtDuration(Math.abs(seconds))}`;
+}
+
+function fmtHours(hours) {
+  return `${+hours.toFixed(2)}h`;
+}
+
+// Classifies a week from /api/quota/weeks for colouring: over, under, met, progress, future, off, none.
+function weekStatus(week) {
+  if (week.quota_hours === null) return "none";
+  const quota = week.quota_hours * 3600;
+  if (quota === 0 && week.seconds < 60) return "off";
+  if (week.state === "future") return "future";
+  if (week.seconds >= quota) return week.seconds - quota >= 60 ? "over" : "met";
+  return week.state === "current" ? "progress" : "under";
+}
+
 function fmtHHMMSS(seconds) {
   seconds = Math.max(0, Math.floor(seconds));
   const h = Math.floor(seconds / 3600);
@@ -167,9 +186,10 @@ async function refreshDashboard() {
   const weekStart = isoDate(startOfWeek(new Date()));
   const weekEnd = isoDate(new Date());
 
-  const [todayEntries, weekSummary] = await Promise.all([
+  const [todayEntries, weekSummary, balance] = await Promise.all([
     api(`/api/entries?start=${today}&end=${today}`),
     api(`/api/summary/week?start=${weekStart}&end=${weekEnd}`),
+    api("/api/quota/balance"),
   ]);
 
   const todayTotal = todayEntries.reduce((sum, e) => {
@@ -180,6 +200,10 @@ async function refreshDashboard() {
 
   const weekTotal = weekSummary.reduce((sum, w) => sum + w.seconds, 0);
   document.getElementById("stat-week").textContent = fmtDuration(weekTotal);
+  document.getElementById("stat-week-quota").textContent = describeCurrentWeek(balance.current_week);
+  const balanceEl = document.getElementById("stat-balance");
+  balanceEl.textContent = fmtSigned(balance.balance_seconds);
+  balanceEl.className = `stat-value balance-${balanceSign(balance.balance_seconds)}`;
 
   renderEntriesList(
     document.getElementById("today-entries"),
@@ -331,12 +355,14 @@ async function loadCalendar() {
   const gridStart = new Date(calYear, calMonth - 1, 1 - leadingBlanks);
   const gridEnd = new Date(calYear, calMonth - 1, daysInMonth + trailingBlanks);
 
-  const [totals, periodData, weekSummary] = await Promise.all([
+  const [totals, periodData, quotaWeeks, balance] = await Promise.all([
     api(`/api/calendar?year=${calYear}&month=${calMonth}`),
     api("/api/periods"),
-    api(`/api/summary/week?start=${localIsoDate(gridStart)}&end=${localIsoDate(gridEnd)}`),
+    api(`/api/quota/weeks?start=${localIsoDate(gridStart)}&end=${localIsoDate(gridEnd)}`),
+    api("/api/quota/balance"),
   ]);
-  const weekTotals = Object.fromEntries(weekSummary.map((w) => [w.week_start, w.seconds]));
+  const weeksByStart = Object.fromEntries(quotaWeeks.map((w) => [w.week_start, w]));
+  renderQuotaSummary(balance);
   const isSubmitted = (dateStr) =>
     periodData.periods.some((p) => p.start_date <= dateStr && dateStr <= p.end_date);
   const grid = document.getElementById("calendar-grid");
@@ -371,7 +397,7 @@ async function loadCalendar() {
     el.innerHTML = `<span class="cal-day-num">${day}</span><span class="cal-day-hours">${secs > 0 ? fmtDuration(secs) : ""}</span>`;
     el.addEventListener("click", () => selectCalendarDay(dateStr));
     grid.appendChild(el);
-    if ((leadingBlanks + day) % 7 === 0) appendWeekTotal(grid, weekTotals, leadingBlanks + day);
+    if ((leadingBlanks + day) % 7 === 0) appendWeekTotal(leadingBlanks + day);
   }
 
   for (let i = 0; i < trailingBlanks; i++) {
@@ -379,18 +405,62 @@ async function loadCalendar() {
     el.className = "cal-day empty";
     grid.appendChild(el);
   }
-  if (trailingBlanks > 0) appendWeekTotal(grid, weekTotals, leadingBlanks + daysInMonth + trailingBlanks);
+  if (trailingBlanks > 0) appendWeekTotal(leadingBlanks + daysInMonth + trailingBlanks);
 
-  function appendWeekTotal(grid, weekTotals, cellCount) {
+  function appendWeekTotal(cellCount) {
     const weekStart = new Date(gridStart);
     weekStart.setDate(gridStart.getDate() + cellCount - 7);
-    const secs = weekTotals[localIsoDate(weekStart)] || 0;
+    const week = weeksByStart[localIsoDate(weekStart)];
+    const status = weekStatus(week);
     const el = document.createElement("div");
-    el.className = "cal-week-total";
-    el.title = `Week of ${localIsoDate(weekStart)}`;
-    el.textContent = secs > 0 ? fmtDuration(secs) : "—";
+    el.className = `cal-week-total week-${status}`;
+    let quotaLine = "";
+    if (status === "off") quotaLine = week.note ? escapeHtml(week.note) : "off";
+    else if (week.quota_hours !== null) quotaLine = `/ ${fmtHours(week.quota_hours)}`;
+    el.innerHTML = `
+      <span class="cal-week-worked">${week.seconds > 0 ? fmtDuration(week.seconds) : "—"}</span>
+      <span class="cal-week-quota">${quotaLine}${week.is_override ? " ✎" : ""}</span>
+    `;
+    el.title = describeWeek(week);
+    el.addEventListener("click", () => openWeekModal(week));
     grid.appendChild(el);
   }
+}
+
+function balanceSign(seconds) {
+  if (Math.abs(seconds) < 60) return "zero";
+  return seconds > 0 ? "over" : "under";
+}
+
+function describeCurrentWeek(week) {
+  if (week.quota_hours === null) return "no quota";
+  const left = week.quota_hours * 3600 - week.seconds;
+  const quota = `of ${fmtHours(week.quota_hours)}`;
+  if (left >= 60) return `${quota} · ${fmtDuration(left)} to go`;
+  return `${quota} · ${fmtSigned(-left)} over`;
+}
+
+function describeWeek(week) {
+  const parts = [`Week of ${week.week_start}`];
+  if (week.quota_hours === null) {
+    parts.push("before quota tracking started");
+  } else {
+    parts.push(`quota ${fmtHours(week.quota_hours)}${week.is_override ? " (custom)" : ""}`);
+    if (week.state !== "future") parts.push(`${fmtSigned(week.seconds - week.quota_hours * 3600)} vs quota`);
+  }
+  if (week.note) parts.push(week.note);
+  return parts.join(" · ");
+}
+
+function renderQuotaSummary(balance) {
+  const sign = balanceSign(balance.balance_seconds);
+  const since = balance.settings.start_date;
+  document.getElementById("quota-summary").innerHTML = `
+    <span>Balance: <strong class="balance-${sign}">${fmtSigned(balance.balance_seconds)}</strong>
+    <span class="quota-muted">since ${since} (completed weeks)</span></span>
+    <span>This week: <strong>${fmtDuration(balance.current_week.seconds)}</strong>
+    <span class="quota-muted">${describeCurrentWeek(balance.current_week)}</span></span>
+  `;
 }
 
 async function selectCalendarDay(dateStr) {
@@ -413,6 +483,105 @@ document.getElementById("cal-next").addEventListener("click", () => {
   calMonth += 1;
   if (calMonth > 12) { calMonth = 1; calYear += 1; }
   loadCalendar();
+});
+
+// ---------- week quota modal ----------
+
+const weekOverlay = document.getElementById("week-modal-overlay");
+const weekHoursInput = document.getElementById("week-hours");
+const weekNoteInput = document.getElementById("week-note");
+const weekError = document.getElementById("week-modal-error");
+const weekReset = document.getElementById("week-reset");
+
+let editingWeek = null;
+
+function openWeekModal(week) {
+  editingWeek = week;
+  weekError.classList.add("hidden");
+  const end = new Date(`${week.week_start}T00:00:00`);
+  end.setDate(end.getDate() + 6);
+  document.getElementById("week-modal-title").textContent = `Week ${week.week_start} – ${localIsoDate(end)}`;
+  document.getElementById("week-modal-worked").textContent = `Worked ${fmtDuration(week.seconds)}. ${describeWeek(week)}`;
+  weekHoursInput.value = week.quota_hours ?? "";
+  weekNoteInput.value = week.note || "";
+  weekReset.classList.toggle("hidden", !week.is_override);
+  weekOverlay.classList.remove("hidden");
+  weekHoursInput.focus();
+}
+
+function closeWeekModal() {
+  weekOverlay.classList.add("hidden");
+}
+
+document.getElementById("week-cancel").addEventListener("click", closeWeekModal);
+weekOverlay.addEventListener("click", (e) => {
+  if (e.target === weekOverlay) closeWeekModal();
+});
+
+document.getElementById("week-save").addEventListener("click", async () => {
+  weekError.classList.add("hidden");
+  if (weekHoursInput.value === "") {
+    weekError.textContent = "Enter the number of hours (0 for a week off).";
+    weekError.classList.remove("hidden");
+    return;
+  }
+  try {
+    await api(`/api/quota/weeks/${editingWeek.week_start}`, {
+      method: "PUT",
+      body: JSON.stringify({ hours: weekHoursInput.value, note: weekNoteInput.value }),
+    });
+    closeWeekModal();
+    await refreshAll();
+  } catch (e) {
+    weekError.textContent = e.message;
+    weekError.classList.remove("hidden");
+  }
+});
+
+weekReset.addEventListener("click", async () => {
+  await api(`/api/quota/weeks/${editingWeek.week_start}`, { method: "DELETE" });
+  closeWeekModal();
+  await refreshAll();
+});
+
+// ---------- quota settings modal ----------
+
+const quotaOverlay = document.getElementById("quota-modal-overlay");
+const quotaHoursInput = document.getElementById("quota-hours");
+const quotaStartInput = document.getElementById("quota-start");
+const quotaError = document.getElementById("quota-modal-error");
+
+document.getElementById("quota-settings-btn").addEventListener("click", async () => {
+  const settings = await api("/api/quota/settings");
+  quotaError.classList.add("hidden");
+  quotaHoursInput.value = settings.weekly_hours;
+  quotaStartInput.value = settings.start_date_is_default ? "" : settings.start_date;
+  quotaStartInput.placeholder = settings.start_date;
+  quotaOverlay.classList.remove("hidden");
+});
+
+function closeQuotaModal() {
+  quotaOverlay.classList.add("hidden");
+}
+
+document.getElementById("quota-cancel").addEventListener("click", closeQuotaModal);
+quotaOverlay.addEventListener("click", (e) => {
+  if (e.target === quotaOverlay) closeQuotaModal();
+});
+
+document.getElementById("quota-save").addEventListener("click", async () => {
+  quotaError.classList.add("hidden");
+  try {
+    await api("/api/quota/settings", {
+      method: "PUT",
+      body: JSON.stringify({ weekly_hours: quotaHoursInput.value, start_date: quotaStartInput.value || null }),
+    });
+    closeQuotaModal();
+    await refreshAll();
+  } catch (e) {
+    quotaError.textContent = e.message;
+    quotaError.classList.remove("hidden");
+  }
 });
 
 // ---------- export tab ----------
