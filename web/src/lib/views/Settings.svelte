@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { api, type HrTemplate, type QuotaSettings } from "../api";
+  import { api, type HrTemplate, type QuotaSettings, type Rates } from "../api";
   import { data, invalidate, toast } from "../state.svelte";
   import { theme, setScheme, type Scheme } from "../theme.svelte";
-  import { fmtDate, fmtDateLong, fmtDuration, fmtRange } from "../time";
+  import { fmtDate, fmtDateLong, fmtDuration, fmtMoney, fmtRange, today } from "../time";
 
   let settings = $state<QuotaSettings | null>(null);
   let hours = $state<number | null>(null);
@@ -18,6 +18,48 @@
       startDate = s.start_date_is_default ? "" : s.start_date;
     });
   });
+
+  // ---------- hourly rate ----------
+  let rates = $state<Rates | null>(null);
+  let rateRows = $state<{ start_date: string; rate: number | null }[]>([]);
+  let currency = $state("CHF");
+  let rateError = $state("");
+
+  $effect(() => {
+    data.version;
+    api.rates().then((r) => {
+      rates = r;
+      currency = r.currency;
+      rateRows = r.rates.map((x) => ({ ...x }));
+    });
+  });
+
+  const ratesDirty = $derived(
+    rates != null && (currency !== rates.currency || JSON.stringify(rateRows) !== JSON.stringify(rates.rates)),
+  );
+
+  function addRate() {
+    const last = rateRows.at(-1);
+    rateRows.push({ start_date: last ? today() : "", rate: last?.rate ?? null });
+  }
+
+  async function saveRates(e: SubmitEvent) {
+    e.preventDefault();
+    rateError = "";
+    try {
+      const saved = await api.saveRates({
+        currency: currency.trim().toUpperCase(),
+        rates: rateRows.filter((r) => r.start_date && r.rate != null).map((r) => ({ start_date: r.start_date, rate: r.rate! })),
+      });
+      rates = saved;
+      currency = saved.currency;
+      rateRows = saved.rates.map((x) => ({ ...x }));
+      invalidate();
+      toast.show("Hourly rate saved");
+    } catch (err) {
+      rateError = err instanceof Error ? err.message : String(err);
+    }
+  }
 
   let hr = $state<HrTemplate | null>(null);
   let hrError = $state("");
@@ -109,6 +151,46 @@
     </form>
   </section>
 
+  <section class="card" aria-labelledby="pay-h">
+    <header>
+      <h2 id="pay-h">Hourly rate</h2>
+      <p>Gross pay shown in Insights and Reports. Not added to exported files.</p>
+    </header>
+    <form class="stack" onsubmit={saveRates}>
+      {#if rateRows.length === 0}
+        <p class="muted small">No rate set, so no amounts are shown.</p>
+      {/if}
+      {#each rateRows as row, i}
+        <div class="rate-row">
+          <label class="field">
+            <span>{i === 0 ? "From" : "Changes on"}</span>
+            <input type="date" bind:value={row.start_date} required />
+          </label>
+          <label class="field">
+            <span>Rate per hour ({currency || "—"})</span>
+            <input type="number" min="0" step="0.05" bind:value={row.rate} required />
+          </label>
+          <button type="button" class="btn icon ghost danger" aria-label="Remove this rate" title="Remove" onclick={() => rateRows.splice(i, 1)}>✕</button>
+        </div>
+      {/each}
+      <div class="row">
+        <button type="button" class="btn sm" onclick={addRate}>{rateRows.length ? "+ Add a rate change" : "+ Set an hourly rate"}</button>
+        <label class="currency">
+          <span class="muted small">Currency</span>
+          <input type="text" bind:value={currency} maxlength="3" pattern={"[A-Za-z]{3}"} required aria-label="Currency code" />
+        </label>
+      </div>
+      {#if rates && rates.rates.length > 0}
+        <p class="muted small">
+          Current rate: <strong class="ink-2">{fmtMoney(rates.rates.at(-1)!.rate, rates.currency)}/h</strong> since {fmtDateLong(rates.rates.at(-1)!.start_date)}.
+          Each rate applies from its date until the next change.
+        </p>
+      {/if}
+      {#if rateError}<p class="error-text" role="alert">{rateError}</p>{/if}
+      <div><button class="btn primary" type="submit" disabled={!ratesDirty}>Save rate</button></div>
+    </form>
+  </section>
+
   <section class="card" aria-labelledby="hr-h">
     <header>
       <h2 id="hr-h">HR timesheet template</h2>
@@ -194,6 +276,23 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
+  }
+  .rate-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 12px;
+    align-items: end;
+  }
+  .currency {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .currency input {
+    width: 4.5em;
+    height: 30px;
+    text-transform: uppercase;
   }
   .upload {
     justify-self: start;

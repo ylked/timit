@@ -2,16 +2,18 @@
   import { api, type HrPeriod, type HrTemplate, type Period, type PeriodState } from "../api";
   import { navigate } from "../router.svelte";
   import { data, invalidate, toast } from "../state.svelte";
-  import { fmtDate, fmtDuration, fmtRange, presetRange } from "../time";
+  import { fmtDate, fmtDuration, fmtMoney, fmtRange, presetRange } from "../time";
   import PeriodDialog from "../components/PeriodDialog.svelte";
 
   let ps = $state<PeriodState | null>(null);
   let hr = $state<HrTemplate | null>(null);
+  let currency = $state("CHF");
+  const money = (n: number | null | undefined) => (n == null ? "" : fmtMoney(n, currency));
   let start = $state("");
   let end = $state("");
   let mark = $state(true);
   let error = $state("");
-  let preview = $state<{ seconds: number; days: number } | null>(null);
+  let preview = $state<{ seconds: number; days: number; earned: number | null } | null>(null);
   let initialised = false;
 
   let periodDialog = $state(false);
@@ -19,9 +21,10 @@
 
   $effect(() => {
     data.version;
-    Promise.all([api.periods(), api.hrTemplate()]).then(([s, t]) => {
+    Promise.all([api.periods(), api.hrTemplate(), api.rates()]).then(([s, t, r]) => {
       ps = s;
       hr = t;
+      currency = r.currency;
       if (!initialised) {
         initialised = true;
         if (suggestedHr) useHr(suggestedHr);
@@ -39,7 +42,12 @@
       return;
     }
     api.daySummary(start, end).then((days) => {
-      preview = { seconds: days.reduce((s, d) => s + d.seconds, 0), days: days.filter((d) => d.seconds >= 60).length };
+      const paid = days.filter((d) => d.earned != null);
+      preview = {
+        seconds: days.reduce((s, d) => s + d.seconds, 0),
+        days: days.filter((d) => d.seconds >= 60).length,
+        earned: paid.length ? Math.round(paid.reduce((s, d) => s + d.earned!, 0) * 100) / 100 : null,
+      };
     });
   });
 
@@ -116,7 +124,7 @@
       <div class="banner warn" role="status">
         <span class="icon" aria-hidden="true">!</span>
         <div>
-          <strong class="num">{fmtDuration(ps.unsubmitted.seconds)}</strong> not yet submitted to HR
+          <strong class="num">{fmtDuration(ps.unsubmitted.seconds)}</strong>{#if ps.unsubmitted.earned}&nbsp;<span class="num">({money(ps.unsubmitted.earned)})</span>{/if} not yet submitted to HR
           <span class="muted">({fmtRange(ps.unsubmitted.start!, ps.unsubmitted.end!)})</span>
         </div>
         {#if suggestedHr}
@@ -133,7 +141,7 @@
     <p class="deadline">
       <span class="badge accent">HR</span>
       Current pay period <strong>{fmtRange(currentHr.start, currentHr.end)}</strong> · deadline <strong>{currentHr.deadline}</strong>
-      {#if currentHr.seconds != null}<span class="muted">· {fmtDuration(currentHr.seconds)} tracked so far</span>{/if}
+      {#if currentHr.seconds != null}<span class="muted">· {fmtDuration(currentHr.seconds)}{currentHr.earned != null ? ` (${money(currentHr.earned)})` : ""} tracked so far</span>{/if}
     </p>
   {/if}
 
@@ -163,6 +171,7 @@
           {#if preview}
             <span class="big num">{fmtDuration(preview.seconds)}</span>
             <span class="muted">over {preview.days} worked day{preview.days === 1 ? "" : "s"}</span>
+            {#if preview.earned != null}<span class="pay num" title="Gross, before social security contributions">{money(preview.earned)} <span class="muted">gross</span></span>{/if}
           {:else}
             <span class="muted">Pick a valid range</span>
           {/if}
@@ -214,6 +223,7 @@
                 <span class="range">{fmtRange(p.start_date, p.end_date)}</span>
                 <span class="meta muted small">submitted {fmtDate(p.exported_at, { day: "numeric", month: "short", year: "numeric" })}{p.note ? ` · ${p.note}` : ""}</span>
                 <span class="hours num">{fmtDuration(p.seconds)}</span>
+                {#if p.earned != null}<span class="pay-line num muted small">{money(p.earned)}</span>{/if}
                 {#if drift}
                   <span class="badge warn" title="Entries in this range changed after it was submitted">⚠ now {fmtDuration(p.current_seconds)}</span>
                 {/if}
@@ -294,6 +304,16 @@
     padding: 12px 14px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
+  }
+  .preview .pay {
+    margin-left: auto;
+    font-weight: 650;
+    font-size: 1.05rem;
+  }
+  .pay-line {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: right;
   }
   .preview .big {
     font-size: 1.4rem;

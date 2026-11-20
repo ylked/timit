@@ -27,6 +27,13 @@ export interface QuotaWeek {
   note: string;
   state: "past" | "current" | "future";
   balance_after?: number;
+  earned?: number | null;
+}
+
+/** Gross pay amounts are null when no hourly rate is configured. */
+export interface Rates {
+  currency: string;
+  rates: { start_date: string; rate: number }[];
 }
 
 export interface Balance {
@@ -44,12 +51,13 @@ export interface Period {
   exported_at: string;
   seconds: number;
   current_seconds: number;
+  earned: number | null;
   note: string;
 }
 
 export interface PeriodState {
   periods: Period[];
-  unsubmitted: { seconds: number; start: string | null; end: string | null };
+  unsubmitted: { seconds: number; start: string | null; end: string | null; earned?: number | null };
   suggested: { start: string; end: string } | null;
 }
 
@@ -59,7 +67,11 @@ export interface Insights {
   total_seconds: number;
   days: { date: string; seconds: number }[];
   weeks: QuotaWeek[];
-  months: { month: string; seconds: number }[];
+  months: { month: string; seconds: number; earned: number | null }[];
+  currency: string;
+  rate: number | null;
+  earned_total: number | null;
+  avg_week_earned: number | null;
   weekdays: { weekday: number; seconds: number; days_worked: number; avg_seconds: number }[];
   heatmap: number[][]; // [weekday 0=Mon][hour]
   sessions: {
@@ -85,6 +97,7 @@ export interface HrPeriod {
   end: string;
   deadline: string; // as written in HR's file, e.g. "15.12.26 at 12.00 PM"
   seconds: number | null; // tracked so far; null for future periods
+  earned: number | null;
   state: "past" | "current" | "future";
 }
 
@@ -154,7 +167,10 @@ export const api = {
   notes: () => request<{ note: string; last_used: string; uses: number }[]>("/api/notes"),
 
   daySummary: (start: string, end: string) =>
-    request<{ date: string; seconds: number }[]>(`/api/summary/day?${range(start, end)}`),
+    request<{ date: string; seconds: number; earned: number | null }[]>(`/api/summary/day?${range(start, end)}`),
+
+  rates: () => request<Rates>("/api/rates"),
+  saveRates: (r: Rates) => request<Rates>("/api/rates", json("PUT", r)),
 
   quotaSettings: () => request<QuotaSettings>("/api/quota/settings"),
   saveQuotaSettings: (s: { weekly_hours: number; start_date: string | null }) =>

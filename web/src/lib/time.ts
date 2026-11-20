@@ -85,6 +85,17 @@ export function fmtHours(hours: number): string {
   return `${+hours.toFixed(2)}h`;
 }
 
+/** "CHF 1,234.50" in the browser's locale. */
+export function fmtMoney(amount: number, currency: string, opts: { whole?: boolean } = {}): string {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    currencyDisplay: "code",
+    minimumFractionDigits: opts.whole ? 0 : 2,
+    maximumFractionDigits: opts.whole ? 0 : 2,
+  }).format(amount);
+}
+
 /** "13:30" from an ISO timestamp. */
 export function fmtTime(iso: string): string {
   return iso.slice(11, 16);

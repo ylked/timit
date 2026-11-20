@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api, type Insights } from "../api";
   import { data } from "../state.svelte";
-  import { fmtDate, fmtDateLong, fmtDuration, fmtMinutes, fmtShort, fmtSigned, fmtTime, HOUR, WEEKDAYS_LONG, WEEKDAYS_SHORT } from "../time";
+  import { fmtDate, fmtDateLong, fmtDuration, fmtMoney, fmtMinutes, fmtShort, fmtSigned, fmtTime, HOUR, WEEKDAYS_LONG, WEEKDAYS_SHORT } from "../time";
   import StatTile from "../components/StatTile.svelte";
   import WeeklyChart from "../charts/WeeklyChart.svelte";
   import BalanceChart from "../charts/BalanceChart.svelte";
@@ -61,6 +61,13 @@
   {:else if ins}
     <div class="tiles">
       <StatTile label="Total tracked" value={fmtShort(ins.total_seconds)} sub="{ins.days_worked} days worked" />
+      {#if ins.earned_total != null}
+        <StatTile
+          label="Earned (gross)"
+          value={fmtMoney(ins.earned_total, ins.currency, { whole: true })}
+          sub={ins.avg_week_earned != null ? `≈ ${fmtMoney(ins.avg_week_earned, ins.currency, { whole: true })} per week · ${fmtMoney(ins.rate!, ins.currency)}/h` : `${fmtMoney(ins.rate!, ins.currency)}/h`}
+        />
+      {/if}
       <StatTile label="Average week" value={fmtDuration(ins.avg_week_seconds)} sub="completed weeks">
         {#if trend?.before != null}
           {@const d = trend.recent - trend.before}
@@ -73,7 +80,11 @@
         value={fmtSigned(balance)}
         tone={Math.abs(balance) < 60 ? undefined : balance > 0 ? "good" : "bad"}
         sub="quota streak {ins.quota_streak.current} wk · best {ins.quota_streak.best}"
-      />
+      >
+        {#if ins.rate != null && Math.abs(balance) >= 60}
+          <span class="delta muted">≈ {balance > 0 ? "+" : "−"}{fmtMoney(Math.abs(balance / HOUR) * ins.rate, ins.currency, { whole: true })} vs quota at the current rate</span>
+        {/if}
+      </StatTile>
     </div>
 
     <section class="card">
@@ -81,7 +92,7 @@
         <h2>Weekly hours vs quota</h2>
         <p>Hover a week for details · the current week is lighter</p>
       </header>
-      <WeeklyChart weeks={ins.weeks} />
+      <WeeklyChart weeks={ins.weeks} currency={ins.currency} />
     </section>
 
     <div class="grid-2">
@@ -153,7 +164,7 @@
             <div>
               <dt>This month</dt>
               <dd>
-                <strong class="num">{fmtDuration(thisMonth.seconds)}</strong>{#if lastMonth}<span class="muted">&nbsp;· {monthName(lastMonth.month).split(" ")[0]}: {fmtDuration(lastMonth.seconds)}</span>{/if}
+                <strong class="num">{fmtDuration(thisMonth.seconds)}</strong>{#if thisMonth.earned != null}<span class="muted">&nbsp;· {fmtMoney(thisMonth.earned, ins.currency, { whole: true })}</span>{/if}{#if lastMonth}<span class="muted">&nbsp;· {monthName(lastMonth.month).split(" ")[0]}: {fmtDuration(lastMonth.seconds)}</span>{/if}
               </dd>
             </div>
           {/if}
@@ -177,7 +188,7 @@
             <span class="lbl">{monthName(m.month)}</span>
             <span class="track"><span class="fill" style:width="{(m.seconds / monthMax) * 100}%"></span></span>
             <span class="val num">{fmtDuration(m.seconds)}</span>
-            <span class="cnt muted small num">{(m.seconds / HOUR).toFixed(1)}h</span>
+            <span class="cnt muted small num">{m.earned != null ? fmtMoney(m.earned, ins.currency, { whole: true }) : `${(m.seconds / HOUR).toFixed(1)}h`}</span>
           </li>
         {/each}
       </ul>
@@ -210,7 +221,7 @@
     align-items: center;
   }
   .months li {
-    grid-template-columns: 9em 1fr 5.5em 3.5em;
+    grid-template-columns: 9em 1fr 5.5em 7em;
   }
   .lbl {
     font-size: 0.85rem;

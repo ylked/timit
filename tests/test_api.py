@@ -136,3 +136,38 @@ def test_hr_template_rejects_files_without_periods(client):
     r = client.post("/api/hr-template", data={"file": (buf, "empty.xlsx")}, content_type="multipart/form-data")
     assert r.status_code == 400
     assert client.get("/api/export/hr").status_code == 404
+
+
+def test_rates_and_earnings(client):
+    # 2h on 31 Aug (before any rate), 2h on 1 Sep at 26, 1h on 1 Oct at 30.
+    add(client, "2026-08-31T09:00:00", "2026-08-31T11:00:00")
+    add(client, "2026-09-01T09:00:00", "2026-09-01T11:00:00")
+    add(client, "2026-10-01T09:00:00", "2026-10-01T10:00:00")
+    assert client.get("/api/insights").get_json()["earned_total"] is None  # no rate yet
+
+    r = client.put("/api/rates", json={"currency": "chf", "rates": [
+        {"start_date": "2026-10-01", "rate": 30}, {"start_date": "2026-09-01", "rate": 26},
+    ]})
+    assert r.status_code == 200
+    assert r.get_json() == {"currency": "CHF", "rates": [{"start_date": "2026-09-01", "rate": 26}, {"start_date": "2026-10-01", "rate": 30}]}
+
+    ins = client.get("/api/insights").get_json()
+    assert ins["earned_total"] == 2 * 26 + 30
+    assert ins["rate"] == 30
+    by_month = {m["month"]: m["earned"] for m in ins["months"]}
+    assert (by_month["2026-08"], by_month["2026-09"], by_month["2026-10"]) == (0, 52, 30)
+
+    days = client.get("/api/summary/day?start=2026-09-01&end=2026-09-01").get_json()
+    assert days[0]["earned"] == 52
+
+    client.post("/api/periods", json={"start_date": "2026-09-01", "end_date": "2026-10-01"})
+    periods = client.get("/api/periods").get_json()
+    assert periods["periods"][0]["earned"] == 82
+    assert periods["unsubmitted"]["earned"] == 0  # 31 Aug is unsubmitted but had no rate
+
+
+def test_rates_validation(client):
+    assert client.put("/api/rates", json={"currency": "francs", "rates": []}).status_code == 400
+    assert client.put("/api/rates", json={"rates": [{"start_date": "2026-09-01", "rate": -1}]}).status_code == 400
+    dup = [{"start_date": "2026-09-01", "rate": 1}, {"start_date": "2026-09-01", "rate": 2}]
+    assert client.put("/api/rates", json={"rates": dup}).status_code == 400

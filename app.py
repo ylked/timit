@@ -74,6 +74,14 @@ def init_db():
         )
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hourly_rates (
+            start_date TEXT PRIMARY KEY,
+            rate REAL NOT NULL
+        )
+        """
+    )
     db.commit()
     db.close()
 
@@ -292,10 +300,12 @@ def summary_day():
     db = get_db()
     start_date, end_date = resolve_range(db, request.args.get("start"), request.args.get("end"))
     totals = daily_totals(db, start_date, end_date)
+    rates = rate_history(db)
     result = []
     d = start_date
     while d <= end_date:
-        result.append({"date": d.isoformat(), "seconds": totals.get(d, 0)})
+        secs = totals.get(d, 0)
+        result.append({"date": d.isoformat(), "seconds": secs, "earned": earned(rates, {d: secs})})
         d += timedelta(days=1)
     return jsonify(result)
 
@@ -501,6 +511,71 @@ def quota_balance():
     })
 
 
+# ---------- hourly rate (pay) ----------
+#
+# A dated history: each rate applies from its start date until the next one. Amounts are
+# gross, computed per day so a rate change mid-period is handled. Without any rate, all
+# "earned" values are None and the UI hides money.
+
+DEFAULT_CURRENCY = "CHF"
+
+
+def rate_history(db):
+    return [(date.fromisoformat(r["start_date"]), r["rate"]) for r in db.execute("SELECT * FROM hourly_rates ORDER BY start_date")]
+
+
+def earned(rates, totals):
+    """Gross pay for {date: seconds}. None if no rate is configured."""
+    if not rates:
+        return None
+    total = 0.0
+    for d, secs in totals.items():
+        rate = next((r for start, r in reversed(rates) if start <= d), None)
+        if rate is not None:
+            total += secs / 3600 * rate
+    return round(total, 2)
+
+
+def range_earned(db, start_date, end_date, rates=None):
+    return earned(rate_history(db) if rates is None else rates, daily_totals(db, start_date, end_date))
+
+
+@app.get("/api/rates")
+def get_rates():
+    db = get_db()
+    return jsonify({
+        "currency": get_setting(db, "currency", DEFAULT_CURRENCY),
+        "rates": [{"start_date": s.isoformat(), "rate": r} for s, r in rate_history(db)],
+    })
+
+
+@app.put("/api/rates")
+def save_rates():
+    """Replaces the whole rate history: {"currency": "CHF", "rates": [{"start_date", "rate"}]}."""
+    data = request.get_json() or {}
+    currency = str(data.get("currency") or DEFAULT_CURRENCY).strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        return jsonify({"error": "Currency must be a 3-letter code, e.g. CHF"}), 400
+    parsed = {}
+    for item in data.get("rates", []):
+        try:
+            start = date.fromisoformat(item["start_date"])
+            rate = float(item["rate"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "Each rate needs a start date and an amount"}), 400
+        if rate < 0:
+            return jsonify({"error": "Rates must not be negative"}), 400
+        if start.isoformat() in parsed:
+            return jsonify({"error": f"Two rates start on {start.isoformat()}"}), 400
+        parsed[start.isoformat()] = rate
+    db = get_db()
+    set_setting(db, "currency", currency)
+    db.execute("DELETE FROM hourly_rates")
+    db.executemany("INSERT INTO hourly_rates (start_date, rate) VALUES (?, ?)", parsed.items())
+    db.commit()
+    return get_rates()
+
+
 # ---------- pay periods (ranges submitted to HR) ----------
 
 def range_seconds(db, start_date, end_date):
@@ -532,7 +607,9 @@ def validate_period(db, data, exclude_id=None):
 
 def period_dict(db, row):
     d = dict(row)
-    d["current_seconds"] = range_seconds(db, date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"]))
+    start, end = date.fromisoformat(row["start_date"]), date.fromisoformat(row["end_date"])
+    d["current_seconds"] = range_seconds(db, start, end)
+    d["earned"] = range_earned(db, start, end)
     return d
 
 
@@ -550,14 +627,17 @@ def list_periods():
         first = parse_iso(bounds["mn"]).date()
         last = max(parse_iso(bounds["mx"]).date(), today)
         covered = [(date.fromisoformat(r["start_date"]), date.fromisoformat(r["end_date"])) for r in rows]
+        uncovered = {}
         for d, secs in daily_totals(db, first, last).items():
             if secs > 0 and not any(s <= d <= e for s, e in covered):
+                uncovered[d] = secs
                 unsubmitted["seconds"] += secs
                 unsubmitted["start"] = min(unsubmitted["start"] or d, d)
                 unsubmitted["end"] = max(unsubmitted["end"] or d, d)
         for key in ("start", "end"):
             if unsubmitted[key]:
                 unsubmitted[key] = unsubmitted[key].isoformat()
+        unsubmitted["earned"] = earned(rate_history(db), uncovered)
 
     # Suggested next range: the day after the latest period up to the end of that month.
     suggested = None
@@ -722,6 +802,17 @@ def insights():
     for x in days:
         months[x["date"][:7]] = months.get(x["date"][:7], 0) + x["seconds"]
 
+    # Pay (gross), per day so rate changes are respected.
+    rates = rate_history(db)
+    month_earned = {}
+    for d, secs in totals.items():
+        month_earned.setdefault(d.isoformat()[:7], {})[d] = secs
+    for w in weeks:
+        ws = date.fromisoformat(w["week_start"])
+        w["earned"] = earned(rates, {d: s for d, s in totals.items() if ws <= d <= ws + timedelta(days=6)})
+    earned_total = earned(rates, totals)
+    completed_earned = [w["earned"] for w in weeks if w["state"] == "past" and w["earned"] is not None]
+
     best_day = max(days, key=lambda x: x["seconds"])
     completed = [w for w in weeks if w["state"] == "past"]
     best_week = max(weeks, key=lambda w: w["seconds"])
@@ -733,7 +824,11 @@ def insights():
         "total_seconds": total,
         "days": days,
         "weeks": weeks,
-        "months": [{"month": m, "seconds": s} for m, s in sorted(months.items())],
+        "months": [{"month": m, "seconds": s, "earned": earned(rates, month_earned.get(m, {}))} for m, s in sorted(months.items())],
+        "currency": get_setting(db, "currency", DEFAULT_CURRENCY),
+        "rate": rates[-1][1] if rates else None,
+        "earned_total": earned_total,
+        "avg_week_earned": round(sum(completed_earned) / len(completed_earned), 2) if completed_earned else None,
         "weekdays": weekdays,
         "heatmap": heatmap,
         "sessions": {
@@ -907,6 +1002,7 @@ def hr_template_info(db):
             "end": p["end"].isoformat(),
             "deadline": p["deadline"],
             "seconds": range_seconds(db, p["start"], min(p["end"], today)) if p["start"] <= today else None,
+            "earned": range_earned(db, p["start"], min(p["end"], today)) if p["start"] <= today else None,
             "state": "past" if p["end"] < today else "current" if p["start"] <= today else "future",
         })
     return {

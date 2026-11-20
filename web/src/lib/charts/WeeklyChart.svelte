@@ -1,10 +1,11 @@
 <script lang="ts">
   // Hours per week as columns, with each week's quota as a tick across the column.
   import type { QuotaWeek } from "../api";
-  import { addDays, fmtDate, fmtDuration, fmtHours, fmtSigned, isoDate, HOUR } from "../time";
+  import { addDays, fmtDate, fmtDuration, fmtHours, fmtMoney, fmtSigned, isoDate, HOUR } from "../time";
   import { showTip, hideTip } from "../components/Tooltip.svelte";
 
-  let { weeks }: { weeks: QuotaWeek[] } = $props();
+  let { weeks, currency = "CHF" }: { weeks: QuotaWeek[]; currency?: string } = $props();
+  const showPay = $derived(weeks.some((w) => w.earned != null));
 
   let width = $state(600);
   const height = 240;
@@ -34,7 +35,7 @@
   }
 
   function tip(e: PointerEvent, w: QuotaWeek) {
-    const lines = [`Worked ${fmtDuration(w.seconds)}`];
+    const lines = [`Worked ${fmtDuration(w.seconds)}${w.earned != null ? ` · ${fmtMoney(w.earned, currency)}` : ""}`];
     if (w.quota_hours != null) {
       lines.push(`Quota ${fmtHours(w.quota_hours)}${w.note ? ` · ${w.note}` : ""}`);
       if (w.state !== "future" && w.quota_hours > 0) {
@@ -78,7 +79,7 @@
 <details class="table">
   <summary>Show as table</summary>
   <table>
-    <thead><tr><th>Week of</th><th>Worked</th><th>Quota</th><th>Difference</th><th>Balance after</th></tr></thead>
+    <thead><tr><th>Week of</th><th>Worked</th><th>Quota</th><th>Difference</th><th>Balance after</th>{#if showPay}<th>Earned (gross)</th>{/if}</tr></thead>
     <tbody>
       {#each weeks.toReversed() as w}
         <tr>
@@ -87,6 +88,7 @@
           <td class="num">{w.quota_hours != null ? fmtHours(w.quota_hours) : "—"}{w.note ? ` (${w.note})` : ""}</td>
           <td class="num">{w.quota_hours != null && w.state !== "future" ? fmtSigned(w.seconds - w.quota_hours * HOUR) : "—"}</td>
           <td class="num">{w.balance_after != null ? fmtSigned(w.balance_after) : "—"}</td>
+          {#if showPay}<td class="num">{w.earned != null ? fmtMoney(w.earned, currency) : "—"}</td>{/if}
         </tr>
       {/each}
     </tbody>

@@ -102,6 +102,15 @@ From the Reports page, for any date range (all entries as JSON are also in Setti
   "Raw Entries" sheet with every individual entry in range.
 - **Raw CSV / JSON** — every entry as `id, start, end, duration, note`.
 
+## Hourly rate
+
+Set your hourly rate under **Settings → Hourly rate**. It's a dated history (a rate
+applies from its date until the next change), so a raise doesn't rewrite past
+pay. Gross amounts then appear in Insights (total earned, per week/month, the
+balance in money) and Reports (range preview, unsubmitted hours, current pay
+period, submitted periods). Amounts are only shown in the app, never added to
+exported files.
+
 ## HR timesheet template
 
 If HR gives you their own Excel file to fill in (rows like `15.09.26 to 14.10.26`
