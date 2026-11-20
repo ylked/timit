@@ -1,8 +1,29 @@
 # Timit
 
-A tiny local work-time tracker. One start/stop button, day/week/calendar views,
-editable entries, and exports (Excel, CSV, JSON). No accounts, no network calls —
-everything lives in a single SQLite file at `data/timit.db`.
+A tiny local work-time tracker. One start/stop button, a live dashboard, a
+calendar with weekly quotas, insights about when and how much you work, and
+exports for HR (Excel, CSV, JSON). No accounts, no network calls — everything
+lives in a single SQLite file at `data/timit.db`.
+
+- **Today** — live timer (also in the header and tab title), backdated start
+  ("forgot to start? 15 min ago"), weekly quota ring, day timeline, day-by-day bars.
+- **Entries** — range presets, note search, entries grouped by day; add/edit in a
+  dialog (an end time before the start means "next day"); delete with undo.
+- **Calendar** — month view shaded by hours, ✓ on days submitted to HR, a week
+  column with quota status. Click a week to change its quota (e.g. 0 for vacation).
+- **Insights** — weekly hours vs quota, running balance, weekday averages, a
+  weekday × hour heatmap, an activity grid, records and monthly totals.
+- **Reports** — exports and the list of periods submitted to HR.
+- **Settings** — default quota, light/dark/system theme, backup download.
+
+Keyboard: `S` / `Space` start/stop, `N` new entry, `1`–`6` switch pages, `?` help.
+
+## Stack
+
+- `app.py` — Flask JSON API over SQLite (also serves the built UI).
+- `web/` — Svelte 5 + TypeScript single-page app built with Vite into `web/dist`.
+  No UI or chart libraries: native `<dialog>`, popover toasts, view transitions,
+  and hand-drawn SVG charts.
 
 ## Setup
 
@@ -10,6 +31,8 @@ everything lives in a single SQLite file at `data/timit.db`.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+cd web && npm install && npm run build   # builds the UI into web/dist (Node 20+)
 ```
 
 ## Run
@@ -19,13 +42,27 @@ source .venv/bin/activate
 python3 app.py
 ```
 
-Open http://localhost:5252 (set `PORT=xxxx` to use a different port).
+Open http://localhost:5252 (set `PORT=xxxx` to use a different port, and
+`TIMIT_DB=/path/to/file.db` to use a different database file).
+
+## Develop
+
+Run the API (`python3 app.py`) and, in another terminal, the UI with hot reload:
+
+```bash
+cd web && npm run dev    # http://localhost:5173, proxies /api to :5252
+npm run check            # type-check
+```
+
+Backend tests (use a temporary database): `pip install pytest && pytest tests`.
 
 ## Run with Docker
 
 ```bash
 docker compose up -d --build
 ```
+
+The image builds the UI itself (multi-stage), so Node isn't needed on the host.
 
 Open http://localhost:5252. Data is stored in a named Docker volume
 (`timit-data`), not a bind-mounted host folder — SQLite needs real file
@@ -50,7 +87,7 @@ fine there — replace the volume line with `./data:/app/data`.
 All data lives in a single SQLite file at `data/timit.db` (or inside the
 `timit-data` Docker volume, when run via Docker). To back up:
 
-- Click **Download Full Backup** on the Export tab (works the same whether
+- Click **Download full backup** in Settings (works the same whether
   running locally or in Docker), or
 - Local run: copy `data/timit.db` somewhere safe (e.g. a synced Dropbox/iCloud folder).
 - Docker run: `docker cp timit:/app/data/timit.db ./timit-backup.db`.
@@ -59,7 +96,7 @@ There's no server-side scheduling — the "backup" is just that one file.
 
 ## Exports
 
-From the Export tab, for any date range (or all time if left blank):
+From the Reports page, for any date range (all entries as JSON are also in Settings):
 
 - **Excel report** (`.xlsx`) — a "Daily Summary" sheet (one row per day) plus a
   "Raw Entries" sheet with every individual entry in range.
@@ -67,7 +104,7 @@ From the Export tab, for any date range (or all time if left blank):
 
 ## Submitting to HR (pay periods)
 
-The Export tab keeps track of which date ranges you've already handed to HR:
+The Reports page keeps track of which date ranges you've already handed to HR:
 
 - With **"Mark this range as submitted to HR"** ticked, exporting also saves the
   range as a submitted period. Untick it to export without marking anything.

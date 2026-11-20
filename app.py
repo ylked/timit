@@ -7,12 +7,14 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, g, jsonify, render_template, request, send_file
+from flask import Flask, g, jsonify, request, send_file, send_from_directory
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "data" / "timit.db"
+DB_PATH = Path(os.environ.get("TIMIT_DB", BASE_DIR / "data" / "timit.db"))
+WEB_DIST = BASE_DIR / "web" / "dist"
 
-app = Flask(__name__)
+# The UI is a Svelte single-page app built into web/dist (see web/README section in README.md).
+app = Flask(__name__, static_folder=None)
 
 
 def get_db():
@@ -153,7 +155,29 @@ def get_entries_in_range(db, start_date, end_date):
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    if not (WEB_DIST / "index.html").exists():
+        return "UI not built. Run `npm install && npm run build` in web/.", 503
+    response = send_from_directory(WEB_DIST, "index.html")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.get("/assets/<path:filename>")
+def assets(filename):
+    # Vite fingerprints asset filenames, so they can be cached forever.
+    response = send_from_directory(WEB_DIST / "assets", filename)
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
+@app.get("/<path:filename>")
+def public_file(filename):
+    # Files from web/public (favicon, manifest). Anything else falls back to the app shell.
+    if filename.startswith("api/"):
+        return jsonify({"error": "Not found"}), 404
+    if (WEB_DIST / filename).is_file():
+        return send_from_directory(WEB_DIST, filename)
+    return index()
 
 
 # ---------- timer ----------
@@ -162,9 +186,10 @@ def index():
 def timer_status():
     db = get_db()
     row = db.execute("SELECT * FROM entries WHERE end_ts IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+    # "now" lets the client compute elapsed time even if its clock or timezone differs.
     if row is None:
-        return jsonify({"running": False})
-    return jsonify({"running": True, "entry": dict(row)})
+        return jsonify({"running": False, "now": now_iso()})
+    return jsonify({"running": True, "entry": dict(row), "now": now_iso()})
 
 
 @app.post("/api/timer/start")
@@ -172,8 +197,18 @@ def timer_start():
     db = get_db()
     if db.execute("SELECT id FROM entries WHERE end_ts IS NULL").fetchone() is not None:
         return jsonify({"error": "A timer is already running"}), 409
-    note = (request.get_json(silent=True) or {}).get("note", "")
-    cur = db.execute("INSERT INTO entries (start_ts, end_ts, note) VALUES (?, NULL, ?)", (now_iso(), note))
+    data = request.get_json(silent=True) or {}
+    note = data.get("note", "")
+    start_ts = now_iso()
+    if data.get("start_ts"):
+        # Backdated start ("I started 15 minutes ago").
+        try:
+            start_ts = normalize_iso(data["start_ts"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid start time"}), 400
+        if start_ts > now_iso():
+            return jsonify({"error": "Start time can't be in the future"}), 400
+    cur = db.execute("INSERT INTO entries (start_ts, end_ts, note) VALUES (?, NULL, ?)", (start_ts, note))
     db.commit()
     row = db.execute("SELECT * FROM entries WHERE id = ?", (cur.lastrowid,)).fetchone()
     return jsonify(dict(row))
@@ -585,6 +620,138 @@ def delete_period(period_id):
     db.execute("DELETE FROM pay_periods WHERE id = ?", (period_id,))
     db.commit()
     return jsonify({"ok": True})
+
+
+# ---------- notes & insights ----------
+
+@app.get("/api/notes")
+def recent_notes():
+    """Distinct notes, most recently used first (for autocomplete)."""
+    rows = get_db().execute(
+        "SELECT note, MAX(start_ts) AS last_used, COUNT(*) AS uses FROM entries "
+        "WHERE TRIM(COALESCE(note, '')) != '' GROUP BY note ORDER BY last_used DESC LIMIT 30"
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+def split_by_hour(start_dt, end_dt):
+    """Yields (weekday, hour, seconds) chunks covering start_dt..end_dt."""
+    cur = start_dt
+    while cur < end_dt:
+        hour_end = cur.replace(minute=0, second=0) + timedelta(hours=1)
+        chunk_end = min(end_dt, hour_end)
+        yield cur.weekday(), cur.hour, (chunk_end - cur).total_seconds()
+        cur = chunk_end
+
+
+@app.get("/api/insights")
+def insights():
+    db = get_db()
+    today = date.today()
+    rows = db.execute("SELECT * FROM entries ORDER BY start_ts").fetchall()
+    if not rows:
+        return jsonify({"empty": True})
+
+    first_day = parse_iso(rows[0]["start_ts"]).date()
+    totals = daily_totals(db, first_day, today)
+    days = []
+    d = first_day
+    while d <= today:
+        days.append({"date": d.isoformat(), "seconds": totals.get(d, 0)})
+        d += timedelta(days=1)
+    worked_days = [x for x in days if x["seconds"] >= 60]
+
+    # Weeks with quota, and the running balance over completed weeks.
+    current_week = week_start_of(today)
+    weeks = quota_weeks(db, week_start_of(first_day), current_week)
+    running = 0
+    for w in weeks:
+        if w["quota_hours"] is not None and w["state"] == "past":
+            running += w["seconds"] - w["quota_hours"] * 3600
+        w["balance_after"] = running
+
+    # Quota streaks: consecutive completed weeks where the quota was met (weeks with
+    # a zero quota, e.g. vacation, neither break nor extend a streak).
+    best_streak = streak = 0
+    for w in weeks:
+        if w["state"] != "past" or w["quota_hours"] is None or w["quota_hours"] == 0:
+            continue
+        streak = streak + 1 if w["seconds"] >= w["quota_hours"] * 3600 - 60 else 0
+        best_streak = max(best_streak, streak)
+
+    # Weekday x hour heatmap and per-weekday totals.
+    heatmap = [[0.0] * 24 for _ in range(7)]
+    for row in rows:
+        for wd, hour, secs in split_by_hour(parse_iso(row["start_ts"]), effective_end(row)):
+            heatmap[wd][hour] += secs
+    weekdays = []
+    for wd in range(7):
+        on_day = [x["seconds"] for x in worked_days if date.fromisoformat(x["date"]).weekday() == wd]
+        weekdays.append({
+            "weekday": wd,
+            "seconds": sum(on_day),
+            "days_worked": len(on_day),
+            "avg_seconds": sum(on_day) / len(on_day) if on_day else 0,
+        })
+
+    # Sessions (completed entries only).
+    sessions = []
+    for row in rows:
+        if row["end_ts"] is None:
+            continue
+        s, e = parse_iso(row["start_ts"]), parse_iso(row["end_ts"])
+        sessions.append({"id": row["id"], "start": row["start_ts"], "end": row["end_ts"], "seconds": (e - s).total_seconds()})
+    durations = sorted(x["seconds"] for x in sessions)
+    longest = max(sessions, key=lambda x: x["seconds"]) if sessions else None
+
+    # Typical first start / last end on worked days, in minutes after that day's midnight
+    # (an entry running past midnight ends at e.g. 24*60 + 30).
+    first_start, last_end = {}, {}
+    for row in rows:
+        s = parse_iso(row["start_ts"])
+        day = s.date()
+        start_min = s.hour * 60 + s.minute
+        end_min = (effective_end(row) - datetime.combine(day, datetime.min.time())).total_seconds() // 60
+        first_start[day] = min(first_start.get(day, start_min), start_min)
+        last_end[day] = max(last_end.get(day, end_min), end_min)
+    earliest_day = min(first_start, key=first_start.get)
+    latest_day = max(last_end, key=last_end.get)
+
+    months = {}
+    for x in days:
+        months[x["date"][:7]] = months.get(x["date"][:7], 0) + x["seconds"]
+
+    best_day = max(days, key=lambda x: x["seconds"])
+    completed = [w for w in weeks if w["state"] == "past"]
+    best_week = max(weeks, key=lambda w: w["seconds"])
+    total = sum(x["seconds"] for x in days)
+
+    return jsonify({
+        "empty": False,
+        "first_day": first_day.isoformat(),
+        "total_seconds": total,
+        "days": days,
+        "weeks": weeks,
+        "months": [{"month": m, "seconds": s} for m, s in sorted(months.items())],
+        "weekdays": weekdays,
+        "heatmap": heatmap,
+        "sessions": {
+            "count": len(sessions),
+            "avg_seconds": sum(durations) / len(durations) if durations else 0,
+            "median_seconds": durations[len(durations) // 2] if durations else 0,
+            "longest": longest,
+        },
+        "days_worked": len(worked_days),
+        "avg_day_seconds": sum(x["seconds"] for x in worked_days) / len(worked_days) if worked_days else 0,
+        "avg_week_seconds": sum(w["seconds"] for w in completed) / len(completed) if completed else 0,
+        "typical_start_minutes": sorted(first_start.values())[len(first_start) // 2],
+        "typical_end_minutes": sorted(last_end.values())[len(last_end) // 2],
+        "earliest_start": {"date": earliest_day.isoformat(), "minutes": first_start[earliest_day]},
+        "latest_end": {"date": latest_day.isoformat(), "minutes": last_end[latest_day]},
+        "best_day": best_day,
+        "best_week": {"week_start": best_week["week_start"], "seconds": best_week["seconds"]},
+        "quota_streak": {"current": streak, "best": best_streak},
+    })
 
 
 # ---------- exports ----------

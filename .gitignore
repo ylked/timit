@@ -6,3 +6,6 @@ data/*.db
 data/*.db-journal
 !data/.gitkeep
 .claude
+web/node_modules/
+web/dist/
+.pytest_cache/
