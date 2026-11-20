@@ -82,14 +82,40 @@ export interface Insights {
 
 export class ApiError extends Error {}
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+// In-flight request tracking, so page transitions can wait for a view's data.
+let inflight = 0;
+let idleWaiters: (() => void)[] = [];
+
+/** Resolves once no API requests (and their resulting renders) are pending, or after `timeoutMs`. */
+export function whenIdle(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    if (inflight === 0) return done();
+    idleWaiters.push(done);
+    setTimeout(done, timeoutMs);
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`);
-  return data as T;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  inflight++;
+  try {
+    const res = await fetch(path, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`);
+    return data as T;
+  } finally {
+    // Let the caller's .then() (which updates state) run before declaring idle.
+    setTimeout(() => {
+      if (--inflight === 0) {
+        const waiters = idleWaiters;
+        idleWaiters = [];
+        waiters.forEach((w) => w());
+      }
+    });
+  }
 }
 
 const json = (method: string, body?: unknown): RequestInit => ({

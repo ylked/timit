@@ -98,7 +98,6 @@ a { color: var(--accent-ink); }
   padding: 24px 24px 64px;
   display: grid;
   gap: 20px;
-  view-transition-name: page;
 }
 
 .page-head {
@@ -308,10 +307,13 @@ dialog[open]::backdrop {
 }
 
 /* ---------- view transitions ---------- */
-::view-transition-old(page) { animation: 120ms ease-out both vt-fade-out; }
-::view-transition-new(page) { animation: 220ms var(--ease) both vt-fade-in; }
+/* A plain full-viewport crossfade (the header is its own static group). Root snapshots are
+   always viewport-sized, so nothing is scaled when pages differ in width or height. */
+::view-transition-old(root) { animation: 100ms ease-out both vt-fade-out; }
+::view-transition-new(root) { animation: 180ms ease-out both vt-fade-in; }
+::view-transition-group(topbar) { animation: none; }
 @keyframes vt-fade-out { to { opacity: 0; } }
-@keyframes vt-fade-in { from { opacity: 0; translate: 0 6px; } }
+@keyframes vt-fade-in { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }

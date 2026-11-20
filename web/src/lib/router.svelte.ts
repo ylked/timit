@@ -1,3 +1,5 @@
+import { tick } from "svelte";
+import { whenIdle } from "./api";
 // Minimal hash router: #/today, #/entries, #/calendar, #/insights, #/reports, #/settings.
 
 export const ROUTES = [
@@ -20,12 +22,18 @@ export const route = $state({ id: current() });
 
 function apply(next: RouteId) {
   if (next === route.id) return;
-  const update = () => {
+  // Swap the view, then hold the transition until its data has loaded (max 400ms),
+  // so it fades into a finished page instead of one that grows as data arrives.
+  const update = async () => {
     route.id = next;
+    await tick();
+    await new Promise((r) => setTimeout(r));
+    await whenIdle(400);
+    await tick();
   };
   // Cross-fade between views where supported; reduced motion is handled in CSS.
   const transition = document.startViewTransition?.(update);
-  if (!transition) update();
+  if (!transition) void update();
   const focusHeading = () => document.querySelector<HTMLElement>("main h1")?.focus({ preventScroll: true });
   transition ? transition.finished.finally(focusHeading) : queueMicrotask(focusHeading);
 }
