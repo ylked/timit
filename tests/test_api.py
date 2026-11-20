@@ -1,5 +1,6 @@
 """API tests. Run with: TIMIT_DB is pointed at a temp file, so real data is never touched."""
 import importlib
+import io
 import os
 from datetime import datetime, timedelta
 
@@ -88,3 +89,50 @@ def test_unknown_api_path_is_json_404(client):
     r = client.get("/api/does-not-exist")
     assert r.status_code == 404
     assert r.is_json
+
+
+def make_hr_template():
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "Hourly rate: CHF 26.00/hour, working hours must be sent by email"  # long text: not the header
+    ws["A3"], ws["B3"], ws["C3"] = "Date", "Timesheet submission deadline", "Working Hours"
+    ws["A4"], ws["B4"] = "02.11.26 to 08.11.26", "09.11.26 at 12.00 PM"
+    ws["A5"], ws["B5"] = "09.11.26 to 15.11.26", "16.11.26 at 12.00 PM"
+    ws["A6"], ws["B6"] = "28.12.26 to 03.01.26", "04.01.27 at 12.00 PM"  # year typo as in the real file
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def test_hr_template_export(client):
+    from openpyxl import load_workbook
+
+    add(client, "2026-11-02T09:00:00", "2026-11-02T10:30:00")
+    add(client, "2026-11-10T09:00:00", "2026-11-10T09:20:00")
+    r = client.post("/api/hr-template", data={"file": (make_hr_template(), "hours_26.xlsx")}, content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_json()
+    info = r.get_json()
+    assert [p["start"] for p in info["periods"]] == ["2026-11-02", "2026-11-09", "2026-12-28"]
+    assert info["periods"][2]["end"] == "2027-01-03"
+
+    r = client.get("/api/export/hr?upto=2026-11-09")
+    assert "hours_26.xlsx" in r.headers["Content-Disposition"]
+    ws = load_workbook(io.BytesIO(r.data)).active
+    assert ws["C4"].value == 1.5
+    assert ws["C5"].value == 0.33
+    assert ws["C6"].value is None  # starts after `upto`: left blank
+    assert ws["A1"].value.startswith("Hourly rate")
+
+
+def test_hr_template_rejects_files_without_periods(client):
+    from openpyxl import Workbook
+
+    buf = io.BytesIO()
+    Workbook().save(buf)
+    buf.seek(0)
+    r = client.post("/api/hr-template", data={"file": (buf, "empty.xlsx")}, content_type="multipart/form-data")
+    assert r.status_code == 400
+    assert client.get("/api/export/hr").status_code == 404

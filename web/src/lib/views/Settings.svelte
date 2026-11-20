@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { api, type QuotaSettings } from "../api";
+  import { api, type HrTemplate, type QuotaSettings } from "../api";
   import { data, invalidate, toast } from "../state.svelte";
   import { theme, setScheme, type Scheme } from "../theme.svelte";
-  import { fmtDateLong } from "../time";
+  import { fmtDate, fmtDateLong, fmtDuration, fmtRange } from "../time";
 
   let settings = $state<QuotaSettings | null>(null);
   let hours = $state<number | null>(null);
@@ -18,6 +18,39 @@
       startDate = s.start_date_is_default ? "" : s.start_date;
     });
   });
+
+  let hr = $state<HrTemplate | null>(null);
+  let hrError = $state("");
+  let uploading = $state(false);
+
+  $effect(() => {
+    data.version;
+    api.hrTemplate().then((t) => (hr = t));
+  });
+
+  async function uploadHr(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    hrError = "";
+    uploading = true;
+    try {
+      hr = await api.uploadHrTemplate(file);
+      invalidate();
+      toast.show(`HR template “${file.name}” saved`);
+    } catch (err) {
+      hrError = err instanceof Error ? err.message : String(err);
+    } finally {
+      uploading = false;
+    }
+  }
+
+  async function removeHr() {
+    hr = await api.deleteHrTemplate();
+    invalidate();
+    toast.show("HR template removed");
+  }
 
   const dirty = $derived(settings != null && (hours !== settings.weekly_hours || startDate !== (settings.start_date_is_default ? "" : settings.start_date)));
 
@@ -76,6 +109,49 @@
     </form>
   </section>
 
+  <section class="card" aria-labelledby="hr-h">
+    <header>
+      <h2 id="hr-h">HR timesheet template</h2>
+      <p>Upload the Excel file HR gave you. Reports can then export it with your hours filled in.</p>
+    </header>
+    <div class="stack">
+      {#if hr?.exists}
+        <div class="spread">
+          <div>
+            <strong>{hr.filename}</strong>
+            {#if hr.uploaded_at}<span class="muted small"> · uploaded {fmtDate(hr.uploaded_at, { day: "numeric", month: "short", year: "numeric" })}</span>{/if}
+          </div>
+          <div class="row">
+            <label class="btn sm">
+              Replace…
+              <input class="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={uploadHr} />
+            </label>
+            <button class="btn sm danger" onclick={removeHr}>Remove</button>
+          </div>
+        </div>
+        <table class="hr-table">
+          <thead><tr><th>Pay period</th><th>Deadline</th><th class="r">Tracked</th></tr></thead>
+          <tbody>
+            {#each hr.periods as p}
+              <tr class:current={p.state === "current"} class:future={p.state === "future"}>
+                <td>{fmtRange(p.start, p.end)}{#if p.state === "current"} <span class="badge accent">current</span>{/if}</td>
+                <td>{p.deadline}</td>
+                <td class="r num">{p.seconds != null ? fmtDuration(p.seconds) : "—"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else if hr}
+        <label class="btn primary upload">
+          {uploading ? "Uploading…" : "Upload HR template (.xlsx)"}
+          <input class="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={uploadHr} disabled={uploading} />
+        </label>
+        <p class="muted small">The file needs rows like “15.09.26 to 14.10.26” and a “Working Hours” column. Nothing else in it is changed.</p>
+      {/if}
+      {#if hrError}<p class="error-text" role="alert">{hrError}</p>{/if}
+    </div>
+  </section>
+
   <section class="card" aria-labelledby="look-h">
     <header>
       <h2 id="look-h">Appearance</h2>
@@ -85,7 +161,7 @@
       {#each schemes as s}
         <label>
           <input type="radio" name="scheme" value={s.id} checked={theme.scheme === s.id} onchange={() => setScheme(s.id)} />
-          {s.label}{#if s.id === "system"}<span class="muted"> (currently {theme.systemDark ? "dark" : "light"})</span>{/if}
+          {s.label}{#if s.id === "system"}<span class="muted">&nbsp;(currently {theme.systemDark ? "dark" : "light"})</span>{/if}
         </label>
       {/each}
     </div>
@@ -118,6 +194,37 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
+  }
+  .upload {
+    justify-self: start;
+  }
+  label.btn:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .hr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  .hr-table th,
+  .hr-table td {
+    text-align: left;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .hr-table th {
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .hr-table .r {
+    text-align: right;
+  }
+  .hr-table tr.current td {
+    background: var(--accent-wash);
+  }
+  .hr-table tr.future td {
+    color: var(--muted);
   }
   kbd {
     display: inline-block;

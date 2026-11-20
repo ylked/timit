@@ -9,3 +9,4 @@ data/*.db-journal
 web/node_modules/
 web/dist/
 .pytest_cache/
+data/*.xlsx

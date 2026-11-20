@@ -102,6 +102,18 @@ From the Reports page, for any date range (all entries as JSON are also in Setti
   "Raw Entries" sheet with every individual entry in range.
 - **Raw CSV / JSON** — every entry as `id, start, end, duration, note`.
 
+## HR timesheet template
+
+If HR gives you their own Excel file to fill in (rows like `15.09.26 to 14.10.26`
+with a deadline and a **Working Hours** column), upload it under
+**Settings → HR timesheet template**. It's stored next to the database as
+`data/hr_template.xlsx`. Reports then offers **HR timesheet (.xlsx)**: the same
+file, same name, with Working Hours (decimal hours, e.g. `45.33`) filled in for
+every pay period that starts on or before the export's end date. Nothing else
+in the file is changed. Reports also shows the current pay period and its
+deadline, and offers the HR periods as quick ranges. Upload next year's file
+to replace it.
+
 ## Submitting to HR (pay periods)
 
 The Reports page keeps track of which date ranges you've already handed to HR:

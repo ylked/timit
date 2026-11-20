@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 import sqlite3
 from calendar import monthrange
 from datetime import date, datetime, timedelta
@@ -852,6 +853,136 @@ def export_json():
     data = [dict(r) for r in rows]
     mem = io.BytesIO(json.dumps(data, indent=2).encode("utf-8"))
     return send_file(mem, as_attachment=True, download_name="timit-entries.json", mimetype="application/json")
+
+
+# ---------- HR timesheet template ----------
+#
+# HR provides a yearly workbook with one row per pay period ("15.09.26 to 14.10.26"),
+# a submission deadline, and a "Working Hours" cell to fill in. The user uploads it once;
+# exports fill the hours from tracked time and leave everything else untouched.
+
+HR_TEMPLATE_PATH = DB_PATH.parent / "hr_template.xlsx"
+HR_RANGE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})\s*(?:to|-|–|bis|au)\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})", re.I)
+
+
+def _hr_date(d, m, y):
+    y = int(y)
+    return date(y + 2000 if y < 100 else y, int(m), int(d))
+
+
+def parse_hr_template(wb):
+    """Finds the period rows and the hours column. Returns (sheet, hours_col, periods)."""
+    for ws in wb.worksheets:
+        hours_col = None
+        periods = []
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and len(cell.value) < 40 and hours_col is None and re.search(r"working\s*hours|hours|heures|stunden", cell.value, re.I):
+                    if not HR_RANGE_RE.search(cell.value):
+                        hours_col = cell.column
+                m = HR_RANGE_RE.search(cell.value) if isinstance(cell.value, str) else None
+                if m:
+                    start = _hr_date(*m.groups()[:3])
+                    end = _hr_date(*m.groups()[3:])
+                    if end < start:  # e.g. "15.12.26 to 14.01.26": the year didn't roll over
+                        end = end.replace(year=end.year + 1)
+                    deadline = ws.cell(row=cell.row, column=cell.column + 1).value
+                    periods.append({"row": cell.row, "start": start, "end": end, "deadline": str(deadline or "")})
+        if periods:
+            return ws, hours_col, periods
+    return None, None, []
+
+
+def hr_template_info(db):
+    if not HR_TEMPLATE_PATH.exists():
+        return {"exists": False}
+    from openpyxl import load_workbook
+
+    _, hours_col, periods = parse_hr_template(load_workbook(HR_TEMPLATE_PATH))
+    today = date.today()
+    out = []
+    for p in periods:
+        out.append({
+            "start": p["start"].isoformat(),
+            "end": p["end"].isoformat(),
+            "deadline": p["deadline"],
+            "seconds": range_seconds(db, p["start"], min(p["end"], today)) if p["start"] <= today else None,
+            "state": "past" if p["end"] < today else "current" if p["start"] <= today else "future",
+        })
+    return {
+        "exists": True,
+        "filename": get_setting(db, "hr_template_filename", "hr_timesheet.xlsx"),
+        "uploaded_at": get_setting(db, "hr_template_uploaded_at"),
+        "has_hours_column": hours_col is not None,
+        "periods": out,
+    }
+
+
+@app.get("/api/hr-template")
+def get_hr_template():
+    return jsonify(hr_template_info(get_db()))
+
+
+@app.post("/api/hr-template")
+def upload_hr_template():
+    from openpyxl import load_workbook
+
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return jsonify({"error": "Choose an .xlsx file"}), 400
+    data = file.read()
+    try:
+        wb = load_workbook(io.BytesIO(data))
+    except Exception:
+        return jsonify({"error": "That doesn't look like an Excel (.xlsx) file"}), 400
+    _, hours_col, periods = parse_hr_template(wb)
+    if not periods:
+        return jsonify({"error": "No pay periods found. Expected cells like “15.09.26 to 14.10.26”."}), 400
+    if hours_col is None:
+        return jsonify({"error": "No “Working Hours” column found"}), 400
+    HR_TEMPLATE_PATH.write_bytes(data)
+    db = get_db()
+    set_setting(db, "hr_template_filename", Path(file.filename).name)
+    set_setting(db, "hr_template_uploaded_at", now_iso())
+    db.commit()
+    return jsonify(hr_template_info(db))
+
+
+@app.delete("/api/hr-template")
+def delete_hr_template():
+    HR_TEMPLATE_PATH.unlink(missing_ok=True)
+    db = get_db()
+    db.execute("DELETE FROM settings WHERE key IN ('hr_template_filename', 'hr_template_uploaded_at')")
+    db.commit()
+    return jsonify({"exists": False})
+
+
+@app.get("/api/export/hr")
+def export_hr():
+    """HR's own workbook with "Working Hours" filled for every period starting on or before `upto`."""
+    from openpyxl import load_workbook
+
+    if not HR_TEMPLATE_PATH.exists():
+        return jsonify({"error": "Upload the HR timesheet template in Settings first"}), 404
+    try:
+        upto = date.fromisoformat(request.args.get("upto") or date.today().isoformat())
+    except ValueError:
+        return jsonify({"error": "Invalid date"}), 400
+    db = get_db()
+    wb = load_workbook(HR_TEMPLATE_PATH)
+    ws, hours_col, periods = parse_hr_template(wb)
+    for p in periods:
+        if p["start"] <= upto:
+            ws.cell(row=p["row"], column=hours_col).value = round(range_seconds(db, p["start"], p["end"]) / 3600, 2)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=get_setting(db, "hr_template_filename", "hr_timesheet.xlsx"),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.get("/api/backup")

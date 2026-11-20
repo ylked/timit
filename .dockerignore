@@ -10,3 +10,4 @@ README.md
 web/node_modules/
 web/dist/
 tests/
+data/*.xlsx

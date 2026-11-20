@@ -80,6 +80,18 @@ export interface Insights {
   quota_streak: { current: number; best: number };
 }
 
+export interface HrPeriod {
+  start: string;
+  end: string;
+  deadline: string; // as written in HR's file, e.g. "15.12.26 at 12.00 PM"
+  seconds: number | null; // tracked so far; null for future periods
+  state: "past" | "current" | "future";
+}
+
+export type HrTemplate =
+  | { exists: false }
+  | { exists: true; filename: string; uploaded_at: string | null; has_hours_column: boolean; periods: HrPeriod[] };
+
 export class ApiError extends Error {}
 
 // In-flight request tracking, so page transitions can wait for a view's data.
@@ -160,6 +172,19 @@ export const api = {
   deletePeriod: (id: number) => request<{ ok: true }>(`/api/periods/${id}`, json("DELETE")),
 
   insights: () => request<Insights | { empty: true }>("/api/insights"),
+
+  hrTemplate: () => request<HrTemplate>("/api/hr-template"),
+  async uploadHrTemplate(file: File): Promise<HrTemplate> {
+    const body = new FormData();
+    body.append("file", file);
+    // No JSON Content-Type here: the browser sets the multipart boundary.
+    const res = await fetch("/api/hr-template", { method: "POST", body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(data.error || `Upload failed (${res.status})`);
+    return data as HrTemplate;
+  },
+  deleteHrTemplate: () => request<HrTemplate>("/api/hr-template", json("DELETE")),
+  hrExportUrl: (upto: string) => `/api/export/hr?upto=${upto}`,
 
   exportUrl: (kind: "xlsx" | "csv" | "json", start?: string, end?: string) => `/api/export/${kind}?${range(start, end)}`,
   backupUrl: "/api/backup",

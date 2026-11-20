@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { api, type Period, type PeriodState } from "../api";
+  import { api, type HrPeriod, type HrTemplate, type Period, type PeriodState } from "../api";
+  import { navigate } from "../router.svelte";
   import { data, invalidate, toast } from "../state.svelte";
   import { fmtDate, fmtDuration, fmtRange, presetRange } from "../time";
   import PeriodDialog from "../components/PeriodDialog.svelte";
 
   let ps = $state<PeriodState | null>(null);
+  let hr = $state<HrTemplate | null>(null);
   let start = $state("");
   let end = $state("");
   let mark = $state(true);
@@ -17,11 +19,13 @@
 
   $effect(() => {
     data.version;
-    api.periods().then((s) => {
+    Promise.all([api.periods(), api.hrTemplate()]).then(([s, t]) => {
       ps = s;
+      hr = t;
       if (!initialised) {
         initialised = true;
-        if (s.suggested) useSuggested();
+        if (suggestedHr) useHr(suggestedHr);
+        else if (s.suggested) useSuggested();
         else ({ start, end } = presetRange("last-month"));
       }
     });
@@ -44,6 +48,22 @@
   );
   const alreadyMarked = $derived(ps?.periods.some((p) => p.start_date === start && p.end_date === end) ?? false);
 
+  // HR pay periods (from the uploaded template) that have started, newest first.
+  const hrPeriods = $derived(hr?.exists ? hr.periods.filter((p) => p.state !== "future").toReversed() : []);
+  const currentHr = $derived(hr?.exists ? hr.periods.find((p) => p.state === "current") : undefined);
+  // The HR period holding the oldest unsubmitted hours, else the current one.
+  const suggestedHr = $derived.by(() => {
+    if (!hr?.exists) return undefined;
+    const first = ps?.unsubmitted.start;
+    return (first && hr.periods.find((p) => p.start <= first && first <= p.end)) || currentHr;
+  });
+
+  function useHr(p: HrPeriod) {
+    start = p.start;
+    end = p.end;
+    mark = true;
+  }
+
   function useSuggested() {
     if (!ps?.suggested) return;
     start = ps.suggested.start;
@@ -58,7 +78,7 @@
     a.click();
   }
 
-  async function doExport(kind: "xlsx" | "csv" | "json") {
+  async function doExport(kind: "hr" | "xlsx" | "csv" | "json") {
     error = "";
     if (!start || !end) {
       error = "Pick a start and end date.";
@@ -74,7 +94,7 @@
         return;
       }
     }
-    download(api.exportUrl(kind, start, end));
+    download(kind === "hr" ? api.hrExportUrl(end) : api.exportUrl(kind, start, end));
   }
 
   function openPeriod(p: Period | null) {
@@ -99,7 +119,9 @@
           <strong class="num">{fmtDuration(ps.unsubmitted.seconds)}</strong> not yet submitted to HR
           <span class="muted">({fmtRange(ps.unsubmitted.start!, ps.unsubmitted.end!)})</span>
         </div>
-        {#if ps.suggested}
+        {#if suggestedHr}
+          <button class="btn sm" onclick={() => useHr(suggestedHr!)}>Select HR period {fmtRange(suggestedHr.start, suggestedHr.end)}</button>
+        {:else if ps.suggested}
           <button class="btn sm" onclick={useSuggested}>Select {fmtRange(ps.suggested.start, ps.suggested.end)}</button>
         {/if}
       </div>
@@ -107,11 +129,26 @@
       <div class="banner ok" role="status"><span class="icon" aria-hidden="true">✓</span> All recorded time has been submitted to HR.</div>
     {/if}
   {/if}
+  {#if currentHr}
+    <p class="deadline">
+      <span class="badge accent">HR</span>
+      Current pay period <strong>{fmtRange(currentHr.start, currentHr.end)}</strong> · deadline <strong>{currentHr.deadline}</strong>
+      {#if currentHr.seconds != null}<span class="muted">· {fmtDuration(currentHr.seconds)} tracked so far</span>{/if}
+    </p>
+  {/if}
 
   <div class="grid-2">
     <section class="card" aria-labelledby="export-h">
       <header><h2 id="export-h">Export</h2></header>
       <form class="stack" onsubmit={(e) => e.preventDefault()}>
+        {#if hrPeriods.length}
+          <div class="row presets" role="group" aria-label="HR pay periods">
+            <span class="muted small">HR periods</span>
+            {#each hrPeriods.slice(0, 3) as p}
+              <button type="button" class="btn sm" class:on={p.start === start && p.end === end} onclick={() => useHr(p)}>{fmtRange(p.start, p.end)}</button>
+            {/each}
+          </div>
+        {/if}
         <div class="row presets">
           {#each [["this-month", "This month"], ["last-month", "Last month"], ["this-week", "This week"], ["last-week", "Last week"]] as [id, label]}
             <button type="button" class="btn sm" onclick={() => ({ start, end } = presetRange(id))}>{label}</button>
@@ -142,11 +179,22 @@
         {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
         <div class="row">
-          <button type="button" class="btn primary" onclick={() => doExport("xlsx")}>Excel report (.xlsx)</button>
+          {#if hr?.exists}
+            <button type="button" class="btn primary" onclick={() => doExport("hr")}>HR timesheet (.xlsx)</button>
+          {/if}
+          <button type="button" class="btn" class:primary={!hr?.exists} onclick={() => doExport("xlsx")}>Excel report (.xlsx)</button>
           <button type="button" class="btn" onclick={() => doExport("csv")}>CSV</button>
           <button type="button" class="btn" onclick={() => doExport("json")}>JSON</button>
         </div>
-        <p class="muted small">The Excel report has a daily summary sheet plus every raw entry.</p>
+        <p class="muted small">
+          {#if hr?.exists}
+            <strong>HR timesheet</strong>: HR's own file ({hr.filename}) with “Working Hours” filled for every pay period starting on or before
+            {end ? fmtDate(end, { day: "numeric", month: "short" }) : "the end date"}.
+          {:else}
+            Have an Excel file from HR to fill in? <a href="#/settings" onclick={(e) => { e.preventDefault(); navigate("settings"); }}>Upload it in Settings</a>.
+          {/if}
+          The Excel report has a daily summary sheet plus every raw entry.
+        </p>
       </form>
     </section>
 
@@ -216,6 +264,20 @@
   .banner.ok .icon {
     background: var(--good);
     color: #fff;
+  }
+  .deadline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: -6px;
+    font-size: 0.9rem;
+    color: var(--ink-2);
+  }
+  .presets .btn.on {
+    border-color: var(--accent);
+    background: var(--accent-wash);
+    color: var(--accent-ink);
   }
   .two {
     display: grid;
