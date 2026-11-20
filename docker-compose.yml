@@ -4,7 +4,7 @@ services:
     ports:
       - "5252:5252"
     volumes:
-      - timit-data:/app/data
+      - ./data:/app/data
     restart: unless-stopped
     environment:
       - TZ=Europe/Zurich
